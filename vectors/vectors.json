@@ -1,6 +1,5 @@
 {
-  "$comment": "Shared test vectors for Hallmarq (docs/DECISIONS.md D2). Every package's test suite loads this file so the SDK and the verifier page are checked against the exact same values as @hallmarq/core (F5). Text inputs are JSON strings (already JSON-escaped by construction); byte inputs are '0x'-prefixed hex. 'hashing.text[].contentHash' is hashText(input); 'hashing.bytes[].hash' is hashBytes(bytes) with no normalization. The two 'spec' vectors and the 'merkle.abc' example come from docs/Hallmarq_Technical_Documentation.pdf ('Hashing specification' / 'Merkle batch specification'), verified independently per docs/DECISIONS.md D10. Every other vector was produced by running this package's own normalizeText/hashText/hashBytes/buildTree/getProof against the given input, documented case by case in the PR.",
-
+  "$comment": "Shared test vectors for Hallmarq (docs/DECISIONS.md D2). Every package's test suite loads this file so the SDK and the verifier page are checked against the exact same values as @hallmarq/core (F5). Text inputs are JSON strings; every non-ASCII or control character in them is written as a \\u escape on purpose (not relying on an editor/formatter to preserve raw invisible characters byte-for-byte). Byte inputs are '0x'-prefixed hex. 'hashing.text[].contentHash' is hashText(input); 'hashing.bytes[].hash' is hashBytes(bytes) with no normalization; 'hashing.bytes[].hashTextResult'/'hashTextThrows' describe hashText(bytes) separately, since bytes go through strict UTF-8 decoding first. The two 'spec' vectors and the 'merkle.abc' example come from docs/Hallmarq_Technical_Documentation.pdf ('Hashing specification' / 'Merkle batch specification'), verified independently per docs/DECISIONS.md D10. Every other vector was produced by running this package's own implementation against the given input, documented case by case in the PR.",
   "hashing": {
     "text": [
       {
@@ -17,8 +16,8 @@
       },
       {
         "name": "NBSP (U+00A0) at the end of the text is kept, not stripped as whitespace",
-        "input": "Hello ",
-        "normalized": "Hello ",
+        "input": "Hello\u00a0",
+        "normalized": "Hello\u00a0",
         "contentHash": "0x14c878b1d705c5e85311acf39837f476f436684498518f861b9022f1b2cacf98"
       },
       {
@@ -40,16 +39,22 @@
         "contentHash": "0xc366c187c3265af9a8946fa9e80029d86b0aae6911117d651b63c3573d8b727d"
       },
       {
-        "name": "NFC é (U+00E9, one codepoint) is not normalized to NFD, and hashes differently from it",
-        "input": "café",
-        "normalized": "café",
+        "name": "NFC \u00e9 (U+00E9, one codepoint) is not normalized to NFD, and hashes differently from it",
+        "input": "caf\u00e9",
+        "normalized": "caf\u00e9",
         "contentHash": "0x9513447e2d376aacd434727887590dd448cda8f2d30c4ace903d31fe209f8ad8"
       },
       {
-        "name": "NFD é (U+0065 U+0301, e + combining acute) is not normalized to NFC, and hashes differently from it",
-        "input": "café",
-        "normalized": "café",
+        "name": "NFD \u00e9 (U+0065 U+0301, e + combining acute) is not normalized to NFC, and hashes differently from it",
+        "input": "cafe\u0301",
+        "normalized": "cafe\u0301",
         "contentHash": "0xe7739d357b90d35469fb9a3a5da362861a02e02c559108dc70489172a29a2fb4"
+      },
+      {
+        "name": "a leading byte-order mark (U+FEFF) in a string is content, not something to strip",
+        "input": "\ufeffHello",
+        "normalized": "\ufeffHello",
+        "contentHash": "0xc065bf40f46e1ccb1b6f566ed7615339cdd1c576e5fc635b463c127b4b1f5702"
       },
       {
         "name": "empty text normalizes to empty text",
@@ -89,14 +94,19 @@
         "hash": "0x0816f49680ddc7160a0f40159cc485b50c57b9493f777f35b63c820d9f8505b9"
       },
       {
-        "name": "invalid UTF-8 (a lone 0xFF byte, never a valid leading byte) throws InvalidUtf8 through hashText, but hashBytes never looks at UTF-8 validity at all",
+        "name": "invalid UTF-8 (a lone 0xFF byte, never a valid leading byte): hashBytes never looks at UTF-8 validity, hashText throws InvalidUtf8",
         "inputHex": "0xff",
-        "hashTextThrows": "InvalidUtf8",
-        "hashBytesResult": "0x8b1a944cf13a9a1c08facb2c9e98623ef3254d2ddb48113885c3e8e97fec8db9"
+        "hash": "0x8b1a944cf13a9a1c08facb2c9e98623ef3254d2ddb48113885c3e8e97fec8db9",
+        "hashTextThrows": "InvalidUtf8"
+      },
+      {
+        "name": "bytes starting with a UTF-8 BOM (EF BB BF) + \"Hello\": hashBytes hashes the raw bytes (no normalization); hashText decodes with the BOM kept (ignoreBOM) and gives the same contentHash as the \\uFEFF-prefixed string vector above",
+        "inputHex": "0xefbbbf48656c6c6f",
+        "hash": "0xc065bf40f46e1ccb1b6f566ed7615339cdd1c576e5fc635b463c127b4b1f5702",
+        "hashTextResult": "0xc065bf40f46e1ccb1b6f566ed7615339cdd1c576e5fc635b463c127b4b1f5702"
       }
     ]
   },
-
   "merkle": {
     "abc": {
       "$comment": "The spec's worked example: three items, the strings A, B and C, hashed directly as UTF-8 (their contentHash values are the A/B/C entries in hashing.text above).",

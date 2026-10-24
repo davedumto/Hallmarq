@@ -27,7 +27,7 @@ interface ByteVector {
   inputHex: Hex;
   hash?: Hex;
   hashTextThrows?: string;
-  hashBytesResult?: Hex;
+  hashTextResult?: Hex;
 }
 
 interface VectorsFile {
@@ -87,11 +87,19 @@ describe("vectors.json: byte vectors", () => {
           expect.objectContaining({ name: vector.hashTextThrows }),
         );
       }
-      if (vector.hashBytesResult !== undefined) {
-        expect(hashBytes(bytes)).toBe(vector.hashBytesResult);
+      if (vector.hashTextResult !== undefined) {
+        expect(hashText(bytes)).toBe(vector.hashTextResult);
       }
     });
   }
+
+  it("the BOM byte vector's hashTextResult matches the \\uFEFF-prefixed string vector's contentHash", () => {
+    const bomVector = vectors.hashing.bytes.find((v) => v.inputHex === "0xefbbbf48656c6c6f");
+    const feffTextVector = vectors.hashing.text.find((v) => v.input.startsWith("\ufeff"));
+    expect(bomVector?.hashTextResult).toBeDefined();
+    expect(feffTextVector?.contentHash).toBeDefined();
+    expect(bomVector?.hashTextResult).toBe(feffTextVector?.contentHash);
+  });
 });
 
 describe("vectors.json: merkle A/B/C worked example", () => {
