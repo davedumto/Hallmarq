@@ -1,10 +1,10 @@
 import { createServer } from "node:http";
 
 import { buildTree, getProof, hashText } from "@hallmarq/core";
-import { Hallmarq } from "@hallmarq/sdk";
+import { AlreadyStamped, Hallmarq } from "@hallmarq/sdk";
 import type { Receipt, VerifyResult } from "@hallmarq/sdk";
 import { expect } from "chai";
-import type { Signer } from "ethers";
+import { Wallet, type Signer } from "ethers";
 import { network } from "hardhat";
 
 const connection = await network.create();
@@ -211,6 +211,83 @@ describe("SDK integration (Hallmarq against a real deployed StampRegistry)", () 
       proof: getProof(tree, 0),
     });
     expect(notInBatch.status).to.equal("not-found");
+  });
+
+  it("resolves a mined-but-reverted stamp to AlreadyStamped when two signers race for the same content", async () => {
+    const { registryAddress, chainId, deploymentBlock } = await deploy();
+    const content = "integration: two signers race for the same content";
+
+    // Hardhat's own test signers (HardhatEthersSigner) can't `signTransaction`
+    // — they only implement eth_sendTransaction, which (unlike a raw
+    // broadcast) validates against pending state and would resolve this
+    // race before either side ever broadcasts, masking the exact path this
+    // test means to exercise. Real `Wallet`s sign locally instead, so this
+    // goes through the SDK's real sign-once-then-broadcast code. The keys
+    // are Hardhat's well-known default test accounts — public fixtures,
+    // not secrets — the same accounts `network.create()`'s own signers use.
+    const alice = new Wallet(
+      "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+      ethers.provider,
+    );
+    const bob = new Wallet(
+      "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+      ethers.provider,
+    );
+
+    const aliceHallmarq = makeHallmarq({
+      registryAddress,
+      chainId,
+      deploymentBlock,
+      signer: alice,
+      confirmTimeoutMs: 15_000,
+    });
+    const bobHallmarq = makeHallmarq({
+      registryAddress,
+      chainId,
+      deploymentBlock,
+      signer: bob,
+      confirmTimeoutMs: 15_000,
+    });
+
+    await ethers.provider.send("evm_setAutomine", [false]);
+    try {
+      const aliceNonceBefore = await ethers.provider.getTransactionCount(alice.address, "pending");
+      const bobNonceBefore = await ethers.provider.getTransactionCount(bob.address, "pending");
+
+      // Both preflights run against the same not-yet-stamped state and pass,
+      // so both signers broadcast a transaction for the same content hash —
+      // the front-running case docs/SECURITY.md names.
+      const alicePromise = aliceHallmarq.stamp(content, { model: "gpt-4o" });
+      const bobPromise = bobHallmarq.stamp(content, { model: "gpt-4o" });
+
+      // Wait until both transactions have actually reached the mempool
+      // before mining, rather than racing them with a fixed delay.
+      while (
+        (await ethers.provider.getTransactionCount(alice.address, "pending")) ===
+          aliceNonceBefore ||
+        (await ethers.provider.getTransactionCount(bob.address, "pending")) === bobNonceBefore
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      // One block mines both: whichever is applied first succeeds, and the
+      // other reverts with AlreadyStamped against the content hash the first
+      // one just claimed.
+      await ethers.provider.send("evm_mine", []);
+
+      const [aliceResult, bobResult] = await Promise.allSettled([alicePromise, bobPromise]);
+      const fulfilled = [aliceResult, bobResult].filter((r) => r.status === "fulfilled");
+      const rejected = [aliceResult, bobResult].filter((r) => r.status === "rejected");
+
+      expect(fulfilled).to.have.lengthOf(1);
+      expect(rejected).to.have.lengthOf(1);
+      const error = rejected[0].reason;
+      expect(error).to.be.instanceOf(AlreadyStamped);
+      expect((error as AlreadyStamped).contentHash).to.equal(hashText(content));
+      expect((error as AlreadyStamped).txHash).to.be.a("string");
+    } finally {
+      await ethers.provider.send("evm_setAutomine", [true]);
+    }
   });
 
   it("waits for 2 confirmations, resolving only once the extra block is mined", async () => {

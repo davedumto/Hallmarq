@@ -24,15 +24,23 @@ export class InvalidMeta extends HallmarqError {
   }
 }
 
-/** Thrown when the registry reports `contentHash` (or a batch `root`) is already stamped. */
+/**
+ * Thrown when the registry reports `contentHash` (or a batch `root`) is
+ * already stamped. `txHash` is set when this came from a transaction that
+ * was actually mined (a front-run: someone else's stamp for the same hash
+ * landed first) rather than from the `staticCall` preflight, which never
+ * sends a transaction at all.
+ */
 export class AlreadyStamped extends HallmarqError {
   readonly code = "ALREADY_STAMPED";
   readonly contentHash: string;
+  readonly txHash: string | undefined;
 
-  constructor(contentHash: string, message = `Already stamped: ${contentHash}`) {
+  constructor(contentHash: string, txHash?: string, message = `Already stamped: ${contentHash}`) {
     super(message);
     this.name = "AlreadyStamped";
     this.contentHash = contentHash;
+    this.txHash = txHash;
   }
 }
 

@@ -5,17 +5,44 @@ export interface RetryOptions {
 }
 
 /**
- * True if `error` looks like a transport-level failure worth retrying,
- * rather than a contract revert (which will fail the same way every time).
- * ethers v6 tags every revert with `code: "CALL_EXCEPTION"`; anything else
- * thrown while sending — a timeout, a dropped connection, an RPC rate
- * limit — is a genuine network failure.
+ * ethers error codes worth retrying: a transport-level failure that may
+ * genuinely succeed on a later attempt. Everything else — a revert
+ * (`CALL_EXCEPTION`), a wallet rejection (`ACTION_REJECTED`),
+ * `INSUFFICIENT_FUNDS`, a stale or conflicting nonce (`NONCE_EXPIRED`,
+ * `REPLACEMENT_UNDERPRICED`), a malformed call (`INVALID_ARGUMENT`), an
+ * operation the signer doesn't support (`UNSUPPORTED_OPERATION`), and so
+ * on — fails the exact same way on every attempt, so retrying it only
+ * delays the error (or, for a wallet prompt, repeats it) without any
+ * chance of success.
+ */
+const RETRYABLE_CODES = new Set(["NETWORK_ERROR", "TIMEOUT", "SERVER_ERROR"]);
+
+/**
+ * A thrown value with no `code` at all isn't one of ethers' own typed
+ * errors; this is a last resort for that case, matching only messages that
+ * plainly describe a transport failure (not an arbitrary string).
+ */
+const TRANSPORT_FAILURE_PATTERN =
+  /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up/i;
+
+/**
+ * True only for an allowlisted transport-level failure worth retrying.
+ * Everything else — including any error this doesn't specifically
+ * recognize — is treated as not worth retrying, since retrying the wrong
+ * thing (a wallet rejection, an insufficient-funds error, a revert) can
+ * only make things worse: repeated wallet prompts, or in the worst case
+ * (see `hallmarq.ts`'s broadcast step) resending something that already
+ * went through.
  */
 export function isRetryableError(error: unknown): boolean {
-  if (error && typeof error === "object" && "code" in error) {
-    return (error as { code?: unknown }).code !== "CALL_EXCEPTION";
+  if (typeof error !== "object" || error === null) {
+    return false;
   }
-  return true;
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  if (typeof code === "string") {
+    return RETRYABLE_CODES.has(code);
+  }
+  return typeof message === "string" && TRANSPORT_FAILURE_PATTERN.test(message);
 }
 
 function defaultSleep(ms: number): Promise<void> {

@@ -10,17 +10,27 @@ import {
 import type { Hex } from "@hallmarq/core";
 import {
   Contract,
+  isCallException,
   JsonRpcProvider,
+  keccak256,
   ZeroAddress,
   ZeroHash,
-  type ContractTransactionResponse,
   type Provider,
   type Signer,
+  type TransactionReceipt,
+  type TransactionResponse,
 } from "ethers";
 
 import { toHallmarqError } from "./abiErrors.js";
 import { canonicalJsonStringify } from "./canonicalJson.js";
-import { ConfigError, ModelTooLong, NoSigner, NotConfirmed, WrongNetwork } from "./errors.js";
+import {
+  AlreadyStamped,
+  ConfigError,
+  ModelTooLong,
+  NoSigner,
+  NotConfirmed,
+  WrongNetwork,
+} from "./errors.js";
 import { stampRegistryAbi } from "./generated/stampRegistryAbi.js";
 import { withRetry } from "./retry.js";
 import type {
@@ -80,35 +90,20 @@ function computeMetaHash(meta: Record<string, unknown> | undefined): Hex {
 }
 
 /**
- * Waits for `tx` to reach `confirmations`, racing against `timeoutMs`.
- * Never resends `tx` — a transaction hash already exists by the time this
- * is called, so from here it's either confirmed or {@link NotConfirmed}.
+ * True when a broadcast attempt failed because the exact same signed
+ * transaction was already accepted by the node on an earlier attempt —
+ * the normal outcome of retrying `broadcastTransaction` after its first
+ * response was lost, not a real failure.
  */
-async function waitForConfirmations(
-  tx: ContractTransactionResponse,
-  confirmations: number,
-  timeoutMs: number,
-) {
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timeoutHandle = setTimeout(() => reject(new NotConfirmed(tx.hash)), timeoutMs);
-    timeoutHandle.unref?.();
-  });
-
-  try {
-    const receipt = await Promise.race([tx.wait(confirmations), timeout]);
-    if (receipt === null) {
-      throw new NotConfirmed(tx.hash);
-    }
-    return receipt;
-  } catch (error) {
-    if (error instanceof NotConfirmed) {
-      throw error;
-    }
-    throw toHallmarqError(error);
-  } finally {
-    clearTimeout(timeoutHandle);
+function isAlreadyBroadcastError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
   }
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  if (code === "NONCE_EXPIRED" || code === "REPLACEMENT_UNDERPRICED") {
+    return true;
+  }
+  return typeof message === "string" && /already known|nonce too low/i.test(message);
 }
 
 /**
@@ -122,11 +117,13 @@ export class Hallmarq {
   #signer: Signer | undefined;
   readonly #readOnly: Contract;
   readonly #signerContract: Contract | undefined;
+  readonly #registryAddress: string;
   readonly #chainId: number | undefined;
   readonly #deploymentBlock: number | undefined;
   readonly #confirmations: number;
   readonly #confirmTimeoutMs: number;
   #networkChecked = false;
+  #contractExistenceChecked = false;
 
   constructor(options: HallmarqOptions = {}) {
     const rpcUrl = options.rpcUrl ?? mstTestnet.rpcUrl;
@@ -150,6 +147,7 @@ export class Hallmarq {
         this.#signer = this.#signer.connect(this.#provider);
       }
 
+      this.#registryAddress = registryAddress;
       this.#chainId = chainId;
       this.#deploymentBlock = deploymentBlock;
       this.#confirmations = options.confirmations ?? 2;
@@ -190,14 +188,139 @@ export class Hallmarq {
   }
 
   /**
+   * Checked once, on the first call of any kind. Without this, a wrong
+   * `registryAddress` (or a correct one on the wrong chain, when `chainId`
+   * isn't configured) reads back as all-zero data — `verify` would report
+   * `"not-found"` instead of the config error it actually is, which the
+   * verifier page would show as "No record found" for content that may
+   * well be stamped.
+   */
+  async #ensureContractExists(): Promise<void> {
+    if (this.#contractExistenceChecked) {
+      return;
+    }
+    const code = await this.#provider.getCode(this.#registryAddress);
+    if (code === "0x") {
+      throw new ConfigError(`No contract code found at registryAddress ${this.#registryAddress}`);
+    }
+    this.#contractExistenceChecked = true;
+  }
+
+  /**
+   * Sends the stamp transaction, signing it once so that a retry — needed
+   * only when the broadcast's response is lost, not when it fails outright
+   * — can never end up as a second, independently-signed transaction. The
+   * transaction (and its hash) is fixed before anything is sent; only the
+   * idempotent re-broadcast of those exact signed bytes is retried.
+   *
+   * Not every signer can produce a raw signed transaction: a browser
+   * wallet only exposes `eth_sendTransaction`, and even Hardhat's own test
+   * signers don't implement `signTransaction`. For any of those, this
+   * falls back to a single, unretried send instead — whatever the reason
+   * `signTransaction` itself failed for, nothing has been broadcast yet,
+   * so falling back is always safe. See the README's "Retries" section.
+   */
+  async #sendStampTransaction(
+    contentHash: Hex,
+    model: string,
+    metaHash: Hex,
+  ): Promise<TransactionResponse> {
+    const signerContract = this.#signerContract!;
+    const signer = this.#signer!;
+
+    const populatedCall = await signerContract.stamp.populateTransaction(
+      contentHash,
+      model,
+      metaHash,
+    );
+    const populated = await signer.populateTransaction(populatedCall);
+
+    let raw: string;
+    try {
+      raw = await signer.signTransaction(populated);
+    } catch {
+      return (await signerContract.stamp(contentHash, model, metaHash)) as TransactionResponse;
+    }
+
+    const txHash = keccak256(raw);
+    try {
+      return await withRetry(() => this.#provider.broadcastTransaction(raw));
+    } catch (error) {
+      if (isAlreadyBroadcastError(error)) {
+        const existing = await this.#provider.getTransaction(txHash);
+        if (existing) {
+          return existing;
+        }
+      }
+      throw error;
+    }
+  }
+
+  async #waitForConfirmations(
+    tx: TransactionResponse,
+    contentHash: Hex,
+  ): Promise<TransactionReceipt> {
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => reject(new NotConfirmed(tx.hash)), this.#confirmTimeoutMs);
+      timeoutHandle.unref?.();
+    });
+
+    try {
+      const receipt = await Promise.race([tx.wait(this.#confirmations), timeout]);
+      if (receipt === null) {
+        throw new NotConfirmed(tx.hash);
+      }
+      return receipt;
+    } catch (error) {
+      if (error instanceof NotConfirmed) {
+        throw error;
+      }
+      throw await this.#resolveMinedFailure(error, contentHash, tx.hash);
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+  }
+
+  /**
+   * A transaction that reverted after being mined throws here with no
+   * decodable revert data (there's no `eth_call` response to parse one
+   * from, only a receipt with `status: 0`), so {@link toHallmarqError}
+   * alone can't tell a front-run apart from a genuine network failure. The
+   * most common cause — someone else's stamp for the same content got
+   * mined first, the front-running case `docs/SECURITY.md` names — is
+   * resolved here by reading the registry back, so the caller gets the
+   * specific, non-retryable {@link AlreadyStamped} instead of a
+   * {@link NetworkError} that looks worth retrying forever.
+   */
+  async #resolveMinedFailure(error: unknown, contentHash: Hex, txHash: string): Promise<Error> {
+    if (isCallException(error)) {
+      try {
+        const stamp = (await this.#readOnly.verify(contentHash)) as StampStruct;
+        if (stamp.registrant !== ZeroAddress) {
+          const signerAddress = await this.#signer!.getAddress();
+          if (stamp.registrant.toLowerCase() !== signerAddress.toLowerCase()) {
+            return new AlreadyStamped(contentHash, txHash);
+          }
+        }
+      } catch {
+        // The lookup itself failed; fall through to the generic mapping.
+      }
+    }
+    return toHallmarqError(error);
+  }
+
+  /**
    * Sends one stamp transaction and waits for confirmations.
    *
    * Validates everything it can client-side first (content, model, meta),
    * then preflights with `staticCall` so a would-be revert (most commonly
-   * `AlreadyStamped`) is caught without spending gas. Only the broadcast
-   * step itself is retried on a network failure (up to 3 attempts, growing
-   * delays); once a transaction hash exists, this never resends — it
-   * either waits for confirmations or throws {@link NotConfirmed}.
+   * `AlreadyStamped`) is caught without spending gas. The transaction is
+   * signed once; only its broadcast is retried, and only for a network
+   * failure before any response was received (see
+   * {@link Hallmarq.#sendStampTransaction}). Once a transaction hash
+   * exists, this never resends — it either waits for confirmations or
+   * throws {@link NotConfirmed}.
    */
   async stamp(content: string | Uint8Array, options: StampOptions): Promise<Receipt> {
     try {
@@ -211,6 +334,7 @@ export class Hallmarq {
       const metaHash = computeMetaHash(options.meta);
 
       await this.#ensureCorrectNetwork();
+      await this.#ensureContractExists();
 
       try {
         await this.#signerContract.stamp.staticCall(contentHash, options.model, metaHash);
@@ -218,21 +342,14 @@ export class Hallmarq {
         throw toHallmarqError(error);
       }
 
-      let tx: ContractTransactionResponse;
+      let tx: TransactionResponse;
       try {
-        tx = await withRetry(
-          async () =>
-            (await this.#signerContract!.stamp(
-              contentHash,
-              options.model,
-              metaHash,
-            )) as ContractTransactionResponse,
-        );
+        tx = await this.#sendStampTransaction(contentHash, options.model, metaHash);
       } catch (error) {
         throw toHallmarqError(error);
       }
 
-      const receipt = await waitForConfirmations(tx, this.#confirmations, this.#confirmTimeoutMs);
+      const receipt = await this.#waitForConfirmations(tx, contentHash);
 
       return {
         contentHash,
@@ -252,6 +369,9 @@ export class Hallmarq {
   /** Looks up `content`'s hash on-chain. Read-only; needs no signer. */
   async verify(content: string | Uint8Array): Promise<VerifyResult> {
     try {
+      await this.#ensureCorrectNetwork();
+      await this.#ensureContractExists();
+
       const contentHash = computeContentHash(content);
       const stamp = (await this.#readOnly.verify(contentHash)) as StampStruct;
 
@@ -297,6 +417,9 @@ export class Hallmarq {
       for (const element of options.proof) {
         assertHash32(element);
       }
+
+      await this.#ensureCorrectNetwork();
+      await this.#ensureContractExists();
 
       const contentHash = computeContentHash(content);
       const root = options.root as Hex;

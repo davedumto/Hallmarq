@@ -5,7 +5,7 @@ vi.mock("ethers", async (importOriginal) => {
   return { ...actual, Contract: vi.fn(), JsonRpcProvider: vi.fn() };
 });
 
-import { Contract, JsonRpcProvider, type Signer } from "ethers";
+import { Contract, JsonRpcProvider, keccak256, type Signer } from "ethers";
 
 import {
   AlreadyStamped,
@@ -30,8 +30,13 @@ import { Hallmarq } from "./hallmarq.js";
 
 const REGISTRY_ADDRESS = "0x" + "11".repeat(20);
 const REGISTRANT = "0x" + "22".repeat(20);
+const OTHER_REGISTRANT = "0x" + "33".repeat(20);
 const RPC_URL = "http://fake-rpc.invalid";
 const CHAIN_ID = 31337;
+// A valid signed-transaction stand-in: not real RLP, but a hex string so
+// `keccak256` can hash it, exactly as production code does to learn the
+// transaction's hash before ever broadcasting it.
+const RAW_SIGNED_TX = "0x" + "cd".repeat(100);
 
 function callException(revert: { name: string; args: unknown[] } | null = null) {
   return Object.assign(new Error("reverted"), { code: "CALL_EXCEPTION", data: "0x", revert });
@@ -41,18 +46,29 @@ function networkFailure() {
   return Object.assign(new Error("timeout"), { code: "TIMEOUT" });
 }
 
+function unsupportedSigning() {
+  return Object.assign(new Error("not supported"), { code: "UNSUPPORTED_OPERATION" });
+}
+
+function alreadyKnown(): Error {
+  return new Error("already known");
+}
+
 interface FakeContract {
   verify: Mock;
   getBatch: Mock;
   verifyInBatch: Mock;
-  stamp: Mock & { staticCall: Mock };
+  stamp: Mock & { staticCall: Mock; populateTransaction: Mock };
   filters: { Stamped: Mock; BatchStamped: Mock };
   queryFilter: Mock;
 }
 
 function makeFakeContract(): FakeContract {
-  const stamp = vi.fn() as Mock & { staticCall: Mock };
+  const stamp = vi.fn() as Mock & { staticCall: Mock; populateTransaction: Mock };
   stamp.staticCall = vi.fn().mockResolvedValue(undefined);
+  stamp.populateTransaction = vi
+    .fn()
+    .mockResolvedValue({ to: REGISTRY_ADDRESS, data: "0xcalldata" });
   return {
     verify: vi.fn(),
     getBatch: vi.fn(),
@@ -66,8 +82,22 @@ function makeFakeContract(): FakeContract {
   };
 }
 
-function makeFakeProvider(chainId = CHAIN_ID) {
-  return { getNetwork: vi.fn().mockResolvedValue({ chainId: BigInt(chainId) }) };
+interface FakeProvider {
+  getNetwork: Mock;
+  getCode: Mock;
+  broadcastTransaction: Mock;
+  getTransaction: Mock;
+}
+
+function makeFakeProvider(chainId = CHAIN_ID): FakeProvider {
+  return {
+    getNetwork: vi.fn().mockResolvedValue({ chainId: BigInt(chainId) }),
+    // Non-"0x": there's code at registryAddress, so #ensureContractExists
+    // passes silently by default; tests for that check override this.
+    getCode: vi.fn().mockResolvedValue("0x1234"),
+    broadcastTransaction: vi.fn(),
+    getTransaction: vi.fn(),
+  };
 }
 
 function makeFakeSigner(provider: unknown = makeFakeProvider()): Signer {
@@ -75,6 +105,8 @@ function makeFakeSigner(provider: unknown = makeFakeProvider()): Signer {
     provider,
     getAddress: vi.fn().mockResolvedValue(REGISTRANT),
     connect: vi.fn((p: unknown) => makeFakeSigner(p)),
+    populateTransaction: vi.fn((tx: unknown) => Promise.resolve(tx)),
+    signTransaction: vi.fn().mockResolvedValue(RAW_SIGNED_TX),
   } as unknown as Signer;
 }
 
@@ -88,7 +120,7 @@ beforeEach(() => {
     return fakeContract;
   });
   (JsonRpcProvider as unknown as Mock).mockImplementation(function () {
-    return {};
+    return makeFakeProvider();
   });
 });
 
@@ -134,14 +166,24 @@ describe("Hallmarq.hashText / hashBytes (re-exported from core)", () => {
 });
 
 describe("Hallmarq.stamp", () => {
-  function makeHallmarq(options: { signer?: unknown } = {}) {
-    const signer = "signer" in options ? options.signer : makeFakeSigner();
+  function makeHallmarq(signer: unknown = makeFakeSigner()) {
     return new Hallmarq({
       rpcUrl: RPC_URL,
       registryAddress: REGISTRY_ADDRESS,
       chainId: CHAIN_ID,
       signer: signer as never,
     });
+  }
+
+  /** A signer/provider pair whose broadcast succeeds, returning the given tx. */
+  function makeWritableSigner(tx: { hash: string; wait: Mock }) {
+    const provider = makeFakeProvider();
+    provider.broadcastTransaction.mockResolvedValue(tx);
+    return { provider, signer: makeFakeSigner(provider) };
+  }
+
+  function successfulTx(hash: string, blockNumber: number) {
+    return { hash, wait: vi.fn().mockResolvedValue({ blockNumber }) };
   }
 
   it("throws NoSigner when constructed without a signer", async () => {
@@ -174,11 +216,8 @@ describe("Hallmarq.stamp", () => {
   });
 
   it("accepts a model label of exactly 64 UTF-8 bytes", async () => {
-    fakeContract.stamp.mockResolvedValue({
-      hash: "0xtx",
-      wait: vi.fn().mockResolvedValue({ blockNumber: 1 }),
-    });
-    const hallmarq = makeHallmarq();
+    const { signer } = makeWritableSigner(successfulTx("0xtx", 1));
+    const hallmarq = makeHallmarq(signer);
     await expect(hallmarq.stamp("hello", { model: "a".repeat(64) })).resolves.toBeDefined();
   });
 
@@ -191,11 +230,8 @@ describe("Hallmarq.stamp", () => {
   });
 
   it("hashes meta to the same metaHash canonicalJsonStringify + hashBytes would produce", async () => {
-    fakeContract.stamp.mockResolvedValue({
-      hash: "0xtx",
-      wait: vi.fn().mockResolvedValue({ blockNumber: 1 }),
-    });
-    const hallmarq = makeHallmarq();
+    const { signer } = makeWritableSigner(successfulTx("0xtx", 1));
+    const hallmarq = makeHallmarq(signer);
     const meta = { b: 1, a: { z: 1, y: 2 } };
     const expectedMetaHash = hashBytes(new TextEncoder().encode(canonicalJsonStringify(meta)));
 
@@ -206,15 +242,16 @@ describe("Hallmarq.stamp", () => {
       "gpt-4o",
       expectedMetaHash,
     );
-    expect(fakeContract.stamp).toHaveBeenCalledWith(hashText("hello"), "gpt-4o", expectedMetaHash);
+    expect(fakeContract.stamp.populateTransaction).toHaveBeenCalledWith(
+      hashText("hello"),
+      "gpt-4o",
+      expectedMetaHash,
+    );
   });
 
   it("uses the zero hash for metaHash when meta is omitted", async () => {
-    fakeContract.stamp.mockResolvedValue({
-      hash: "0xtx",
-      wait: vi.fn().mockResolvedValue({ blockNumber: 1 }),
-    });
-    const hallmarq = makeHallmarq();
+    const { signer } = makeWritableSigner(successfulTx("0xtx", 1));
+    const hallmarq = makeHallmarq(signer);
     await hallmarq.stamp("hello", { model: "gpt-4o" });
     const zeroHash = "0x" + "0".repeat(64);
     expect(fakeContract.stamp.staticCall).toHaveBeenCalledWith(
@@ -226,36 +263,36 @@ describe("Hallmarq.stamp", () => {
 
   it("checks the network before the first write, throwing WrongNetwork on a mismatch", async () => {
     const signer = makeFakeSigner(makeFakeProvider(999));
-    const hallmarq = makeHallmarq({ signer });
+    const hallmarq = makeHallmarq(signer);
     await expect(hallmarq.stamp("hello", { model: "gpt-4o" })).rejects.toThrow(WrongNetwork);
     expect(fakeContract.stamp.staticCall).not.toHaveBeenCalled();
   });
 
-  it("only checks the network once, not on every stamp call", async () => {
-    fakeContract.stamp.mockResolvedValue({
-      hash: "0xtx",
-      wait: vi.fn().mockResolvedValue({ blockNumber: 1 }),
-    });
-    const signer = makeFakeSigner();
-    const hallmarq = makeHallmarq({ signer });
+  it("only checks the network and contract code once, not on every stamp call", async () => {
+    const { provider, signer } = makeWritableSigner(successfulTx("0xtx", 1));
+    const hallmarq = makeHallmarq(signer);
 
     await hallmarq.stamp("one", { model: "gpt-4o" });
     await hallmarq.stamp("two", { model: "gpt-4o" });
 
-    expect((signer.provider as unknown as { getNetwork: Mock }).getNetwork).toHaveBeenCalledTimes(
-      1,
-    );
+    expect(provider.getNetwork).toHaveBeenCalledTimes(1);
+    expect(provider.getCode).toHaveBeenCalledTimes(1);
   });
 
   it("skips the network check entirely when chainId isn't configured", async () => {
-    fakeContract.stamp.mockResolvedValue({
-      hash: "0xtx",
-      wait: vi.fn().mockResolvedValue({ blockNumber: 1 }),
-    });
-    const signer = makeFakeSigner();
+    const { provider, signer } = makeWritableSigner(successfulTx("0xtx", 1));
     const hallmarq = new Hallmarq({ rpcUrl: RPC_URL, registryAddress: REGISTRY_ADDRESS, signer });
     await hallmarq.stamp("hello", { model: "gpt-4o" });
-    expect((signer.provider as unknown as { getNetwork: Mock }).getNetwork).not.toHaveBeenCalled();
+    expect(provider.getNetwork).not.toHaveBeenCalled();
+  });
+
+  it("throws ConfigError when there is no contract code at registryAddress", async () => {
+    const provider = makeFakeProvider();
+    provider.getCode.mockResolvedValue("0x");
+    const hallmarq = makeHallmarq(makeFakeSigner(provider));
+
+    await expect(hallmarq.stamp("hello", { model: "gpt-4o" })).rejects.toThrow(ConfigError);
+    expect(fakeContract.stamp.staticCall).not.toHaveBeenCalled();
   });
 
   it("throws AlreadyStamped(contentHash) from the preflight, without ever sending a transaction", async () => {
@@ -270,51 +307,122 @@ describe("Hallmarq.stamp", () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(AlreadyStamped);
     expect((error as AlreadyStamped).contentHash).toBe(contentHash);
-    expect(fakeContract.stamp).not.toHaveBeenCalled();
+    expect(fakeContract.stamp.populateTransaction).not.toHaveBeenCalled();
   });
 
-  it("retries a transient send failure (no tx hash yet) and succeeds on a later attempt", async () => {
-    fakeContract.stamp.mockRejectedValueOnce(networkFailure()).mockResolvedValueOnce({
-      hash: "0xtx",
-      wait: vi.fn().mockResolvedValue({ blockNumber: 42 }),
-    });
-    const hallmarq = makeHallmarq();
+  it("signs the stamp transaction exactly once, even when the broadcast itself is retried", async () => {
+    const provider = makeFakeProvider();
+    provider.broadcastTransaction
+      .mockRejectedValueOnce(networkFailure())
+      .mockResolvedValueOnce(successfulTx("0xtx", 1));
+    const signer = makeFakeSigner(provider);
+    const hallmarq = makeHallmarq(signer);
+
+    await hallmarq.stamp("hello", { model: "gpt-4o" });
+
+    expect((signer as unknown as { signTransaction: Mock }).signTransaction).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(provider.broadcastTransaction).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a transient broadcast failure (no tx hash yet) and succeeds on a later attempt", async () => {
+    const provider = makeFakeProvider();
+    provider.broadcastTransaction
+      .mockRejectedValueOnce(networkFailure())
+      .mockResolvedValueOnce(successfulTx("0xtx", 42));
+    const hallmarq = makeHallmarq(makeFakeSigner(provider));
 
     const receipt = await hallmarq.stamp("hello", { model: "gpt-4o" });
 
-    expect(fakeContract.stamp).toHaveBeenCalledTimes(2);
+    expect(provider.broadcastTransaction).toHaveBeenCalledTimes(2);
     expect(receipt.blockNumber).toBe(42);
   }, 10_000);
 
-  it("never retries a revert (CALL_EXCEPTION) from the send step itself", async () => {
-    fakeContract.stamp.mockRejectedValue(callException({ name: "ModelTooLong", args: [] }));
-    const hallmarq = makeHallmarq();
+  it("never retries a non-retryable error from the broadcast step itself", async () => {
+    const provider = makeFakeProvider();
+    provider.broadcastTransaction.mockRejectedValue(
+      callException({ name: "ModelTooLong", args: [] }),
+    );
+    const hallmarq = makeHallmarq(makeFakeSigner(provider));
 
     const error: unknown = await hallmarq
       .stamp("hello", { model: "gpt-4o" })
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ModelTooLong);
-    expect(fakeContract.stamp).toHaveBeenCalledTimes(1);
+    expect(provider.broadcastTransaction).toHaveBeenCalledTimes(1);
   });
 
   it("wraps an unrecognized network failure that exhausts every retry as NetworkError", async () => {
-    fakeContract.stamp.mockRejectedValue(networkFailure());
-    const hallmarq = makeHallmarq();
+    const provider = makeFakeProvider();
+    provider.broadcastTransaction.mockRejectedValue(networkFailure());
+    const hallmarq = makeHallmarq(makeFakeSigner(provider));
 
     const error: unknown = await hallmarq
       .stamp("hello", { model: "gpt-4o" })
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(NetworkError);
-    expect(fakeContract.stamp).toHaveBeenCalledTimes(3);
+    expect(provider.broadcastTransaction).toHaveBeenCalledTimes(3);
   }, 10_000);
+
+  it("recovers from an 'already known' broadcast error by looking up the already-broadcast transaction, instead of resending", async () => {
+    const provider = makeFakeProvider();
+    provider.broadcastTransaction.mockRejectedValue(alreadyKnown());
+    const expectedTxHash = keccak256(RAW_SIGNED_TX);
+    provider.getTransaction.mockResolvedValue({
+      hash: expectedTxHash,
+      wait: vi.fn().mockResolvedValue({ blockNumber: 9 }),
+    });
+    const signer = makeFakeSigner(provider);
+    const hallmarq = makeHallmarq(signer);
+
+    const receipt = await hallmarq.stamp("hello", { model: "gpt-4o" });
+
+    expect(receipt.blockNumber).toBe(9);
+    expect(receipt.txHash).toBe(expectedTxHash);
+    expect((signer as unknown as { signTransaction: Mock }).signTransaction).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(provider.broadcastTransaction).toHaveBeenCalledTimes(1);
+    expect(provider.getTransaction).toHaveBeenCalledWith(expectedTxHash);
+  });
+
+  it("falls back to a single, unretried send when the signer can't sign a raw transaction", async () => {
+    const provider = makeFakeProvider();
+    const signer = makeFakeSigner(provider);
+    (signer.signTransaction as Mock).mockRejectedValue(unsupportedSigning());
+    fakeContract.stamp.mockResolvedValue(successfulTx("0xtx", 1));
+    const hallmarq = makeHallmarq(signer);
+
+    const receipt = await hallmarq.stamp("hello", { model: "gpt-4o" });
+
+    expect(receipt.txHash).toBe("0xtx");
+    expect(fakeContract.stamp).toHaveBeenCalledTimes(1);
+    expect(provider.broadcastTransaction).not.toHaveBeenCalled();
+  });
+
+  it("never retries the fallback send for a signer that can't sign a raw transaction", async () => {
+    const provider = makeFakeProvider();
+    const signer = makeFakeSigner(provider);
+    (signer.signTransaction as Mock).mockRejectedValue(unsupportedSigning());
+    fakeContract.stamp.mockRejectedValue(networkFailure());
+    const hallmarq = makeHallmarq(signer);
+
+    const error: unknown = await hallmarq
+      .stamp("hello", { model: "gpt-4o" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(fakeContract.stamp).toHaveBeenCalledTimes(1);
+  });
 
   it("never resends once a transaction hash exists: a wait() timeout throws NotConfirmed, not a second send", async () => {
     const hangingWait = vi.fn(() => new Promise(() => {}));
-    fakeContract.stamp.mockResolvedValue({ hash: "0xtx", wait: hangingWait });
+    const provider = makeFakeProvider();
+    provider.broadcastTransaction.mockResolvedValue({ hash: "0xtx", wait: hangingWait });
     const hallmarq = new Hallmarq({
       rpcUrl: RPC_URL,
       registryAddress: REGISTRY_ADDRESS,
-      signer: makeFakeSigner(),
+      signer: makeFakeSigner(provider),
       confirmTimeoutMs: 20,
     });
 
@@ -323,57 +431,102 @@ describe("Hallmarq.stamp", () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(NotConfirmed);
     expect((error as NotConfirmed).txHash).toBe("0xtx");
-    expect(fakeContract.stamp).toHaveBeenCalledTimes(1);
+    expect(provider.broadcastTransaction).toHaveBeenCalledTimes(1);
   });
 
   it("throws NotConfirmed when wait() resolves null, without resending", async () => {
-    fakeContract.stamp.mockResolvedValue({ hash: "0xtx", wait: vi.fn().mockResolvedValue(null) });
-    const hallmarq = makeHallmarq();
+    const provider = makeFakeProvider();
+    provider.broadcastTransaction.mockResolvedValue({
+      hash: "0xtx",
+      wait: vi.fn().mockResolvedValue(null),
+    });
+    const hallmarq = makeHallmarq(makeFakeSigner(provider));
 
     const error: unknown = await hallmarq
       .stamp("hello", { model: "gpt-4o" })
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(NotConfirmed);
-    expect(fakeContract.stamp).toHaveBeenCalledTimes(1);
+    expect(provider.broadcastTransaction).toHaveBeenCalledTimes(1);
   });
 
   it("never resends when wait() itself rejects with a network failure (wraps as NetworkError)", async () => {
-    fakeContract.stamp.mockResolvedValue({
+    const provider = makeFakeProvider();
+    provider.broadcastTransaction.mockResolvedValue({
       hash: "0xtx",
       wait: vi.fn().mockRejectedValue(networkFailure()),
     });
-    const hallmarq = makeHallmarq();
+    const hallmarq = makeHallmarq(makeFakeSigner(provider));
 
     const error: unknown = await hallmarq
       .stamp("hello", { model: "gpt-4o" })
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(NetworkError);
-    expect(fakeContract.stamp).toHaveBeenCalledTimes(1);
+    expect(provider.broadcastTransaction).toHaveBeenCalledTimes(1);
   });
 
-  it("decodes AlreadyStamped from a late revert surfaced through wait() (a race after preflight)", async () => {
+  it("resolves a mined-but-reverted tx to AlreadyStamped when someone else's stamp landed first (a front-run after preflight)", async () => {
     const contentHash = hashText("hello");
-    fakeContract.stamp.mockResolvedValue({
+    const provider = makeFakeProvider();
+    provider.broadcastTransaction.mockResolvedValue({
       hash: "0xtx",
-      wait: vi
-        .fn()
-        .mockRejectedValue(callException({ name: "AlreadyStamped", args: [contentHash] })),
+      wait: vi.fn().mockRejectedValue(callException(null)),
     });
-    const hallmarq = makeHallmarq();
+    fakeContract.verify.mockResolvedValue({
+      registrant: OTHER_REGISTRANT,
+      timestamp: 1n,
+      metaHash: "0x" + "0".repeat(64),
+      model: "gpt-4o",
+    });
+    const hallmarq = makeHallmarq(makeFakeSigner(provider));
 
     const error: unknown = await hallmarq
       .stamp("hello", { model: "gpt-4o" })
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(AlreadyStamped);
-    expect(fakeContract.stamp).toHaveBeenCalledTimes(1);
+    expect((error as AlreadyStamped).contentHash).toBe(contentHash);
+    expect((error as AlreadyStamped).txHash).toBe("0xtx");
+    expect(provider.broadcastTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not misreport AlreadyStamped when a mined revert's registrant is actually us", async () => {
+    const provider = makeFakeProvider();
+    provider.broadcastTransaction.mockResolvedValue({
+      hash: "0xtx",
+      wait: vi.fn().mockRejectedValue(callException(null)),
+    });
+    fakeContract.verify.mockResolvedValue({
+      registrant: REGISTRANT,
+      timestamp: 1n,
+      metaHash: "0x" + "0".repeat(64),
+      model: "gpt-4o",
+    });
+    const hallmarq = makeHallmarq(makeFakeSigner(provider));
+
+    const error: unknown = await hallmarq
+      .stamp("hello", { model: "gpt-4o" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error).not.toBeInstanceOf(AlreadyStamped);
+  });
+
+  it("wraps a mined revert as NetworkError when the registry lookup to resolve it also fails", async () => {
+    const provider = makeFakeProvider();
+    provider.broadcastTransaction.mockResolvedValue({
+      hash: "0xtx",
+      wait: vi.fn().mockRejectedValue(callException(null)),
+    });
+    fakeContract.verify.mockRejectedValue(networkFailure());
+    const hallmarq = makeHallmarq(makeFakeSigner(provider));
+
+    const error: unknown = await hallmarq
+      .stamp("hello", { model: "gpt-4o" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(NetworkError);
   });
 
   it("returns a Receipt with every field on success", async () => {
-    fakeContract.stamp.mockResolvedValue({
-      hash: "0xdeadbeef",
-      wait: vi.fn().mockResolvedValue({ blockNumber: 777 }),
-    });
-    const hallmarq = makeHallmarq();
+    const { signer } = makeWritableSigner(successfulTx("0xdeadbeef", 777));
+    const hallmarq = makeHallmarq(signer);
 
     const receipt = await hallmarq.stamp("hello", { model: "gpt-4o" });
 
@@ -399,8 +552,12 @@ describe("Hallmarq.stamp", () => {
 });
 
 describe("Hallmarq.verify", () => {
-  function makeHallmarq() {
-    return new Hallmarq({ rpcUrl: RPC_URL, registryAddress: REGISTRY_ADDRESS });
+  function makeHallmarq(options: { chainId?: number } = {}) {
+    return new Hallmarq({
+      rpcUrl: RPC_URL,
+      registryAddress: REGISTRY_ADDRESS,
+      chainId: options.chainId,
+    });
   }
 
   it("works without a signer at all", async () => {
@@ -490,11 +647,58 @@ describe("Hallmarq.verify", () => {
     const error: unknown = await hallmarq.verify("hello").catch((e: unknown) => e);
     expect(error).toBeInstanceOf(NetworkError);
   });
+
+  it("checks the network before reading, throwing WrongNetwork on a mismatch instead of a silent not-found", async () => {
+    (JsonRpcProvider as unknown as Mock).mockImplementation(function () {
+      return makeFakeProvider(999);
+    });
+    const hallmarq = makeHallmarq({ chainId: CHAIN_ID });
+
+    await expect(hallmarq.verify("hello")).rejects.toThrow(WrongNetwork);
+    expect(fakeContract.verify).not.toHaveBeenCalled();
+  });
+
+  it("throws ConfigError when there is no contract code at registryAddress, instead of returning not-found", async () => {
+    (JsonRpcProvider as unknown as Mock).mockImplementation(function () {
+      const provider = makeFakeProvider();
+      provider.getCode.mockResolvedValue("0x");
+      return provider;
+    });
+    const hallmarq = makeHallmarq();
+
+    await expect(hallmarq.verify("hello")).rejects.toThrow(ConfigError);
+    expect(fakeContract.verify).not.toHaveBeenCalled();
+  });
+
+  it("checks the network and contract code only once across multiple verify calls", async () => {
+    fakeContract.verify.mockResolvedValue({
+      registrant: "0x0000000000000000000000000000000000000000",
+      timestamp: 0n,
+      metaHash: "0x" + "0".repeat(64),
+      model: "",
+    });
+    let provider: FakeProvider | undefined;
+    (JsonRpcProvider as unknown as Mock).mockImplementation(function () {
+      provider = makeFakeProvider();
+      return provider;
+    });
+    const hallmarq = makeHallmarq({ chainId: CHAIN_ID });
+
+    await hallmarq.verify("one");
+    await hallmarq.verify("two");
+
+    expect(provider?.getNetwork).toHaveBeenCalledTimes(1);
+    expect(provider?.getCode).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Hallmarq.verifyInBatch", () => {
-  function makeHallmarq() {
-    return new Hallmarq({ rpcUrl: RPC_URL, registryAddress: REGISTRY_ADDRESS });
+  function makeHallmarq(options: { chainId?: number } = {}) {
+    return new Hallmarq({
+      rpcUrl: RPC_URL,
+      registryAddress: REGISTRY_ADDRESS,
+      chainId: options.chainId,
+    });
   }
 
   const validRoot = "0x" + "aa".repeat(32);
@@ -571,5 +775,31 @@ describe("Hallmarq.verifyInBatch", () => {
       blockNumber: 99,
       txHash: "0xbatchtx",
     });
+  });
+
+  it("checks the network before calling the contract, throwing WrongNetwork on a mismatch", async () => {
+    (JsonRpcProvider as unknown as Mock).mockImplementation(function () {
+      return makeFakeProvider(999);
+    });
+    const hallmarq = makeHallmarq({ chainId: CHAIN_ID });
+
+    await expect(hallmarq.verifyInBatch("hello", { root: validRoot, proof: [] })).rejects.toThrow(
+      WrongNetwork,
+    );
+    expect(fakeContract.getBatch).not.toHaveBeenCalled();
+  });
+
+  it("throws ConfigError when there is no contract code at registryAddress, instead of returning not-found", async () => {
+    (JsonRpcProvider as unknown as Mock).mockImplementation(function () {
+      const provider = makeFakeProvider();
+      provider.getCode.mockResolvedValue("0x");
+      return provider;
+    });
+    const hallmarq = makeHallmarq();
+
+    await expect(hallmarq.verifyInBatch("hello", { root: validRoot, proof: [] })).rejects.toThrow(
+      ConfigError,
+    );
+    expect(fakeContract.getBatch).not.toHaveBeenCalled();
   });
 });

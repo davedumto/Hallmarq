@@ -7,12 +7,19 @@ import { InvalidMeta } from "./errors.js";
  * `stamp`'s `meta` option into bytes for `metaHash`.
  *
  * Throws {@link InvalidMeta} if `value`, or anything nested inside it, is
- * `undefined`, a function, a `bigint`, a `symbol`, `NaN` or
- * `Infinity`/`-Infinity` — none of which JSON can represent, and none of
- * which this silently drops or coerces the way `JSON.stringify` does for
- * some of them.
+ * `undefined`, a function, a `bigint`, a `symbol`, `NaN`,
+ * `Infinity`/`-Infinity`, a circular reference, or an object that isn't a
+ * plain object or array (`Date`, `Map`, `Set`, `RegExp`, a typed array, a
+ * class instance, ...). Those object kinds would otherwise silently encode
+ * as `{}` (since `Object.keys` on them is typically empty), making two
+ * different values hash identically — none of this is silently dropped or
+ * coerced the way `JSON.stringify` does for some of it.
  */
 export function canonicalJsonStringify(value: unknown): string {
+  return encode(value, new Set());
+}
+
+function encode(value: unknown, ancestors: Set<object>): string {
   if (value === undefined) {
     throw new InvalidMeta("meta contains undefined, which canonical JSON can't represent");
   }
@@ -42,12 +49,34 @@ export function canonicalJsonStringify(value: unknown): string {
       break;
   }
 
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJsonStringify(item)).join(",")}]`;
+  const object: object = value;
+  if (ancestors.has(object)) {
+    throw new InvalidMeta("meta contains a circular reference, which JSON can't represent");
   }
+  ancestors.add(object);
+  try {
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => encode(item, ancestors)).join(",")}]`;
+    }
 
-  const entry = value as Record<string, unknown>;
-  const keys = Object.keys(entry).sort();
-  const fields = keys.map((key) => `${JSON.stringify(key)}:${canonicalJsonStringify(entry[key])}`);
-  return `{${fields.join(",")}}`;
+    const prototype: unknown = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new InvalidMeta(
+        `meta contains a ${describeNonPlainObject(object)}, which canonical JSON only encodes as a plain object; ` +
+          "convert it to a plain object or array first",
+      );
+    }
+
+    const entry = value as Record<string, unknown>;
+    const keys = Object.keys(entry).sort();
+    const fields = keys.map((key) => `${JSON.stringify(key)}:${encode(entry[key], ancestors)}`);
+    return `{${fields.join(",")}}`;
+  } finally {
+    ancestors.delete(object);
+  }
+}
+
+function describeNonPlainObject(value: object): string {
+  const name = (value as { constructor?: { name?: string } }).constructor?.name;
+  return name && name !== "Object" ? name : "non-plain object";
 }

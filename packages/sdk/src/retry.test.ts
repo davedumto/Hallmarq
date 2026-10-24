@@ -2,30 +2,52 @@ import { describe, expect, it, vi } from "vitest";
 
 import { isRetryableError, withRetry } from "./retry.js";
 
+function coded(code: string, message = "boom"): Error & { code: string } {
+  return Object.assign(new Error(message), { code });
+}
+
 function callException(): Error & { code: string } {
-  return Object.assign(new Error("reverted"), { code: "CALL_EXCEPTION" });
+  return coded("CALL_EXCEPTION", "reverted");
 }
 
 function networkError(): Error & { code: string } {
-  return Object.assign(new Error("timeout"), { code: "TIMEOUT" });
+  return coded("TIMEOUT", "timeout");
 }
 
+// Every non-retryable code the CTO review named: a wallet rejection,
+// insufficient funds, a stale or conflicting nonce, a malformed call and an
+// unsupported signer operation all fail the exact same way on every retry.
+const NON_RETRYABLE_CODES = [
+  "CALL_EXCEPTION",
+  "ACTION_REJECTED",
+  "INSUFFICIENT_FUNDS",
+  "NONCE_EXPIRED",
+  "REPLACEMENT_UNDERPRICED",
+  "INVALID_ARGUMENT",
+  "UNSUPPORTED_OPERATION",
+];
+
 describe("isRetryableError", () => {
-  it("is false for a CALL_EXCEPTION (a contract revert)", () => {
-    expect(isRetryableError(callException())).toBe(false);
+  it.each(NON_RETRYABLE_CODES)("is false for %s", (code) => {
+    expect(isRetryableError(coded(code))).toBe(false);
   });
 
-  it("is true for any other coded ethers error", () => {
-    expect(isRetryableError(networkError())).toBe(true);
+  it.each(["NETWORK_ERROR", "TIMEOUT", "SERVER_ERROR"])("is true for %s", (code) => {
+    expect(isRetryableError(coded(code))).toBe(true);
   });
 
-  it("is true for a plain error with no code", () => {
-    expect(isRetryableError(new Error("boom"))).toBe(true);
+  it("is false for a plain error with no code and a message that isn't a known transport failure", () => {
+    expect(isRetryableError(new Error("boom"))).toBe(false);
   });
 
-  it("is true for a non-object thrown value", () => {
-    expect(isRetryableError("boom")).toBe(true);
-    expect(isRetryableError(undefined)).toBe(true);
+  it("is true for a no-code error whose message plainly describes a transport failure", () => {
+    expect(isRetryableError(new Error("fetch failed"))).toBe(true);
+    expect(isRetryableError(new Error("connect ECONNRESET 127.0.0.1:8545"))).toBe(true);
+  });
+
+  it("is false for a non-object thrown value", () => {
+    expect(isRetryableError("boom")).toBe(false);
+    expect(isRetryableError(undefined)).toBe(false);
   });
 });
 
@@ -67,6 +89,19 @@ describe("withRetry", () => {
     // Only 2 sleeps: no delay is needed after the final, non-retried attempt.
     expect(sleep).toHaveBeenCalledTimes(2);
   });
+
+  it.each(NON_RETRYABLE_CODES)(
+    "sends exactly once for a non-retryable %s, never retrying it",
+    async (code) => {
+      const error = coded(code);
+      const send = vi.fn().mockRejectedValue(error);
+      const sleep = vi.fn().mockResolvedValue(undefined);
+
+      await expect(withRetry(send, { sleep })).rejects.toBe(error);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
 
   it("never retries a CALL_EXCEPTION (a revert), even on the first attempt", async () => {
     const error = callException();
