@@ -2,7 +2,11 @@
 
 ## Flow
 
-- Branch from `main`: `feat/<nn>-<slug>` for a roadmap PR, `fix/<slug>` for fixes.
+- `dev` is the default and integration branch. `main` is releases only.
+- Branch from `dev` and open the PR against `dev`. Use `feat/<nn>-<slug>` for a roadmap PR,
+  `fix/<slug>` for fixes, and `chore/<slug>` for tooling and docs. Never use `claude/` or
+  personal prefixes.
+- Don't add AI-tool attribution trailers (`Co-Authored-By`, session links) to commits or PRs.
 - One roadmap PR per branch. Don't bundle unrelated changes.
 - Conventional commits (`feat(core): ...`, `test(contract): ...`, `fix(sdk): ...`).
 - Before you push, run `pnpm lint && pnpm format:check && pnpm build && pnpm test`.
@@ -37,4 +41,5 @@
 
 ## Merge rule
 
-CI is green and the CTO has approved, then squash-merge.
+CI is green and the CTO has approved, then squash-merge into `dev`. Release PRs
+`dev` → `main` use a merge commit.

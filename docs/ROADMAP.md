@@ -5,13 +5,16 @@ below comes with a **prompt**: paste it to the engineer (human or AI) as-is.
 
 **Workflow**
 
-1. The engineer branches from `main` as `feat/<nn>-<slug>` (e.g. `feat/02-core-hashing`).
+1. The engineer branches from `dev` as `feat/<nn>-<slug>` (e.g. `feat/02-core-hashing`) and
+   opens the PR against `dev`.
 2. They implement the prompt, run `pnpm lint && pnpm test` locally, and open a PR
    using the template.
 3. The CTO reviews against `CONTRIBUTING.md`. The engineer addresses every comment
    or replies with a reason, then pushes.
 4. Squash-merge once CI is green and the CTO approves. The next PR starts from the
-   updated `main`.
+   updated `dev`.
+5. At each milestone (after PRs 5, 8 and 10) the CTO opens a release PR from `dev` into
+   `main`. `main` only ever holds reviewed, releasable code.
 
 PRs 2 and 3 can run in parallel after PR 1. Everything else is sequential.
 
@@ -48,7 +51,7 @@ These aren't engineering tasks. The engineer must not guess these values.
 >   Prettier, plus `solhint` for Solidity.
 > - Root scripts: `pnpm build`, `pnpm test` (Hardhat tests + every package's vitest),
 >   `pnpm lint`, `pnpm format:check`.
-> - GitHub Actions `ci.yml` on PRs and pushes to main: install with a frozen lockfile,
+> - GitHub Actions `ci.yml` on PRs and pushes to `dev` and `main`: install with a frozen lockfile,
 >   lint, format check, build, test. Node 22.
 > - `README.md` with a one-paragraph description, layout, and how to run tests.
 > - `.nvmrc`, `.editorconfig`, MIT `LICENSE`.
@@ -237,7 +240,7 @@ These aren't engineering tasks. The engineer must not guess these values.
 >   360px wide.
 > - Tests: vitest + jsdom for the state logic, plus one Playwright test running against a local Hardhat node
 >   with a stamped fixture that sees each of the four states.
-> - CI: build and deploy to GitHub Pages on merge to main.
+> - CI: build and deploy to GitHub Pages on merge to `main`.
 >
 > Done when: the Playwright test passes, the built page has no third-party requests, and the bundle is
 > under 250 KB gzipped.
