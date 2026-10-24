@@ -86,3 +86,20 @@ The CTO recomputed every hash in the spec with ethers v6 `keccak256` before
 work began. The two text vectors, the raw (unnormalized) hash, and every value in
 the A/B/C Merkle example match the spec exactly. The step that's still open is
 running these values against the contract, which is PR 4.
+
+## D11. Two SDK additions beyond the spec (PR 6)
+
+The spec doesn't define how `meta` turns into `metaHash`, or how `verify`/
+`verifyInBatch` should query event logs without scanning from block 0. Two
+additions, both backward-compatible (no existing field or method changed):
+
+- **Canonical-JSON `metaHash`.** `metaHash = hashBytes(utf8(canonicalJson(meta)))`,
+  where `canonicalJson` sorts object keys recursively, preserves array order,
+  and emits no whitespace. This makes `metaHash` reproducible across
+  implementations instead of depending on `JSON.stringify`'s unspecified key
+  order. A vector lives in `vectors/vectors.json`'s `meta` entry.
+- **`deploymentBlock` on `NetworkConfig`.** Added alongside `chainId`/`rpcUrl`/
+  `explorerUrl`/`registryAddress` (D8). `verify`/`verifyInBatch` filter the
+  `Stamped`/`BatchStamped` events from this block instead of block 0, which
+  public RPCs often reject for unbounded ranges. `undefined` until Roadmap
+  PR 5's deployment fills it in, same as `registryAddress`.
