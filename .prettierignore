@@ -6,3 +6,4 @@ cache/
 typechain-types/
 node_modules/
 docs/*.pdf
+docs/**/*.md

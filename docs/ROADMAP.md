@@ -201,7 +201,7 @@ These aren't engineering tasks. The engineer must not guess these values.
 >   `staticCall` preflight to catch `AlreadyStamped` without spending gas. Send, wait for
 >   `confirmations`, and return `Receipt { contentHash, txHash, blockNumber, registrant, model }`.
 > - `verify(content)`: read-only. Returns `VerifyResult { status: "found" | "not-found", registrant?,
-model?, blockNumber?, timestamp? }`. To get `blockNumber`, query the `Stamped` event filtered by
+>   model?, blockNumber?, timestamp? }`. To get `blockNumber`, query the `Stamped` event filtered by
 >   `contentHash`.
 >   Also export `verifyInBatch(content, { root, proof })` returning `found-in-batch` + batch info.
 > - Errors (all extend `HallmarqError`): `InvalidUtf8`, `EmptyContent`, `ModelTooLong`, `AlreadyStamped`,
