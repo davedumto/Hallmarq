@@ -1,0 +1,19 @@
+{
+  "name": "@hallmarq/verifier",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Static page that checks content against the StampRegistry in the visitor's browser.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
+  }
+}

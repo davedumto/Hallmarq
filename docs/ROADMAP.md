@@ -42,6 +42,7 @@ These aren't engineering tasks. The engineer must not guess these values.
 **Prompt**
 
 > Set up the Hallmarq monorepo per `docs/DECISIONS.md` D1, D5, D6.
+>
 > - pnpm workspace with `packages/core`, `packages/sdk`, `packages/verifier` (empty
 >   `src/index.ts` each, with a placeholder test), and a root Hardhat 3 project
 >   (`contracts/`, `test/`, `scripts/`, `hardhat.config.ts`) using ethers v6 + mocha.
@@ -71,6 +72,7 @@ These aren't engineering tasks. The engineer must not guess these values.
 
 > Implement `packages/core` per the spec sections "Hashing specification" and
 > "Merkle batch specification", plus DECISIONS D2, D3, D4.
+>
 > - `normalizeText(input: string | Uint8Array): string`. Bytes are decoded as **strict**
 >   UTF-8 (`new TextDecoder("utf-8", { fatal: true })`) and throw `InvalidUtf8` if they're
 >   invalid. Then apply steps 2–4 exactly as D3 defines whitespace. Don't use regex `\s`
@@ -108,6 +110,7 @@ These aren't engineering tasks. The engineer must not guess these values.
 
 > Add `contracts/StampRegistry.sol` from the spec's "Reference implementation". Change
 > only these things:
+>
 > - Pin `pragma solidity 0.8.26;`.
 > - Add NatSpec on every external function, event and error.
 > - Keep it under 100 lines with no owner, no proxy and no delete (N2). Don't add features.
@@ -134,6 +137,7 @@ These aren't engineering tasks. The engineer must not guess these values.
 **Prompt**
 
 > Depends on PRs 2 and 3.
+>
 > - `test/StampRegistry.property.test.ts`: fast-check, `numRuns: 1000`. Generate 1–500 random
 >   hashes, build the tree with `@hallmarq/core`, call `stampRoot`, and assert that
 >   `verifyInBatch` returns true for a random sample of leaves (at least the first, the last and one random).
@@ -185,6 +189,7 @@ These aren't engineering tasks. The engineer must not guess these values.
 **Prompt**
 
 > Implement `packages/sdk` per the spec sections "SDK" and "SDK reference", except batching (PR 7).
+>
 > - `new Hallmarq({ rpcUrl?, chainId?, registryAddress?, signer?, confirmations = 2, batch? })`.
 >   Defaults come from `@hallmarq/core` networks (D8). `signer` is optional; without one, only
 >   `verify` / hashing work, and the write methods throw `NoSigner`.
@@ -221,6 +226,7 @@ These aren't engineering tasks. The engineer must not guess these values.
 **Prompt**
 
 > Add `stampBatched(content, { model })` and `flush()` per the spec's "Batching behaviour".
+>
 > - One open batch per model label. A batch is sent at `maxItems` (default 256), at `maxWaitMs`
 >   (default 30000) after its first item, or on `flush()`. Each call returns a promise that resolves
 >   with `Receipt` + `{ root, proof, batchSize }` when the batch confirms, or rejects with the same error for every
@@ -248,6 +254,7 @@ These aren't engineering tasks. The engineer must not guess these values.
 
 > Build `packages/verifier` per the spec sections "Verifier page" and "Verification algorithm",
 > plus D7.
+>
 > - Vite + vanilla TS. Inputs: a textarea, a file drop (raw bytes) and an optional receipt file
 >   (`ReceiptFile` from PR 7). The page runs the spec's 5-step algorithm exactly.
 > - Four result states with **exactly** the visitor wording from the spec table: Registered,

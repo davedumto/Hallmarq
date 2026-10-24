@@ -1,0 +1,28 @@
+{
+  "name": "@hallmarq/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Normalization, hashing and Merkle tree logic shared by the SDK and the verifier.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
+  }
+}
