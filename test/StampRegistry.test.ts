@@ -104,8 +104,9 @@ describe("StampRegistry", () => {
       const model = "a".repeat(64);
       expect(Buffer.byteLength(model, "utf8")).to.equal(64);
 
-      await expect(registry.stamp(ethers.id("content-64-ascii"), model, ZERO_HASH)).to.not.be
-        .reverted;
+      await expect(registry.stamp(ethers.id("content-64-ascii"), model, ZERO_HASH)).to.not.revert(
+        ethers,
+      );
     });
 
     it("reverts with ModelTooLong for a model label of 65 ASCII bytes", async () => {
@@ -126,8 +127,9 @@ describe("StampRegistry", () => {
       const model = "é".repeat(32);
       expect(Buffer.byteLength(model, "utf8")).to.equal(64);
 
-      await expect(registry.stamp(ethers.id("content-64-utf8"), model, ZERO_HASH)).to.not.be
-        .reverted;
+      await expect(registry.stamp(ethers.id("content-64-utf8"), model, ZERO_HASH)).to.not.revert(
+        ethers,
+      );
     });
 
     it("reverts with ModelTooLong for a multi-byte UTF-8 model label of 65 bytes", async () => {
