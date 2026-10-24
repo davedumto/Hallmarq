@@ -14,6 +14,8 @@
     "build": "pnpm --filter \"./packages/*\" run build && tsc -p tsconfig.json --noEmit",
     "test": "pnpm run test:hardhat && pnpm --filter \"./packages/*\" run test",
     "test:hardhat": "hardhat test",
+    "test:gas": "hardhat test --gas-stats",
+    "report:size": "node tools/print-contract-size.mjs",
     "lint": "eslint . && pnpm run lint:sol",
     "lint:sol": "node tools/lint-solidity.mjs",
     "lint:fix": "eslint . --fix",

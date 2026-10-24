@@ -40,4 +40,17 @@ export default tseslint.config(
     files: ["tools/**/*.mjs"],
     ...tseslint.configs.disableTypeChecked,
   },
+  {
+    // Hardhat/ethers contract tests: without compiled typechain-types,
+    // ethers.deployContract() returns a generically-typed Contract whose
+    // methods and return values are `any`. There's no way to call a
+    // contract method here and keep the type-aware unsafe-* rules happy.
+    files: ["test/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-unsafe-member-access": "off",
+      "@typescript-eslint/no-unsafe-call": "off",
+    },
+  },
 );
