@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { buildTree, getProof, hashText, leafHash, nodeHash, verifyProof } from "./index.js";
-import { EmptyBatch } from "./errors.js";
+import { EmptyBatch, InvalidHex } from "./errors.js";
+import type { Hex } from "./types.js";
 
 const A = hashText("A");
 const B = hashText("B");
@@ -95,5 +96,49 @@ describe("getProof / verifyProof", () => {
     // prepends 0x00 to it, which never equals the 0x01-prefixed value the
     // tree actually computed for that node.
     expect(verifyProof(tree.root, innerNode, shortenedProof)).toBe(false);
+  });
+
+  it("accepts an uppercase-hex root as equal to the lowercase root it computes", () => {
+    const tree = buildTree([A, B, C]);
+    const proofForA = getProof(tree, 0);
+    const uppercaseRoot = tree.root.toUpperCase() as Hex;
+    expect(verifyProof(uppercaseRoot, A, proofForA)).toBe(true);
+  });
+});
+
+describe("hex validation (leafHash / nodeHash / verifyProof)", () => {
+  // These simulate a value that *looks* like it satisfies the `Hex` type
+  // (it's a string starting with "0x") but isn't actually a valid 32-byte
+  // hash — exactly what a receipt file parsed with `JSON.parse` could hand
+  // these functions at runtime, with nothing from TypeScript to stop it.
+  const notHex = "0xzz" as Hex;
+  const tooShort = "0x1234" as Hex;
+  const tooLong = ("0x" + "ab".repeat(33)) as Hex;
+
+  it("leafHash throws InvalidHex on malformed or wrongly-sized input", () => {
+    expect(() => leafHash(notHex)).toThrow(InvalidHex);
+    expect(() => leafHash(tooShort)).toThrow(InvalidHex);
+    expect(() => leafHash(tooLong)).toThrow(InvalidHex);
+  });
+
+  it("nodeHash throws InvalidHex if either argument is malformed or wrongly sized", () => {
+    expect(() => nodeHash(notHex, leafHash(A))).toThrow(InvalidHex);
+    expect(() => nodeHash(leafHash(A), tooShort)).toThrow(InvalidHex);
+    expect(() => nodeHash(tooLong, leafHash(A))).toThrow(InvalidHex);
+  });
+
+  it("verifyProof throws InvalidHex for a malformed root", () => {
+    const tree = buildTree([A, B, C]);
+    expect(() => verifyProof(notHex, A, getProof(tree, 0))).toThrow(InvalidHex);
+  });
+
+  it("verifyProof throws InvalidHex for a malformed contentHash", () => {
+    const tree = buildTree([A, B, C]);
+    expect(() => verifyProof(tree.root, tooShort, getProof(tree, 0))).toThrow(InvalidHex);
+  });
+
+  it("verifyProof throws InvalidHex for a malformed proof element", () => {
+    const tree = buildTree([A, B, C]);
+    expect(() => verifyProof(tree.root, A, [notHex])).toThrow(InvalidHex);
   });
 });

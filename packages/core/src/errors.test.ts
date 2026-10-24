@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { EmptyBatch, EmptyContent, HallmarqError, InvalidUtf8 } from "./errors.js";
+import { EmptyBatch, EmptyContent, HallmarqError, InvalidHex, InvalidUtf8 } from "./errors.js";
 
 describe("HallmarqError subclasses", () => {
   it("InvalidUtf8 has a stable code, a default message, and is a HallmarqError", () => {
@@ -36,5 +36,16 @@ describe("HallmarqError subclasses", () => {
 
   it("EmptyBatch accepts a custom message", () => {
     expect(new EmptyBatch("custom").message).toBe("custom");
+  });
+
+  it("InvalidHex has a stable code and is a HallmarqError", () => {
+    const error = new InvalidHex();
+    expect(error).toBeInstanceOf(HallmarqError);
+    expect(error.name).toBe("InvalidHex");
+    expect(error.code).toBe("INVALID_HEX");
+  });
+
+  it("InvalidHex accepts a custom message", () => {
+    expect(new InvalidHex("custom").message).toBe("custom");
   });
 });

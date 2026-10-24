@@ -44,3 +44,19 @@ export class EmptyBatch extends HallmarqError {
     this.name = "EmptyBatch";
   }
 }
+
+/**
+ * Thrown by `fromHex` and `assertHash32` when a string isn't the hex they
+ * need. The `Hex` type only protects callers that go through TypeScript —
+ * a hash parsed from JSON (a receipt file, say) is just a `string` at
+ * runtime, so these checks are what actually stop malformed input from
+ * being hashed into something that merely looks plausible.
+ */
+export class InvalidHex extends HallmarqError {
+  readonly code = "INVALID_HEX";
+
+  constructor(message = "Input is not a valid hex string") {
+    super(message);
+    this.name = "InvalidHex";
+  }
+}

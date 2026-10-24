@@ -1,4 +1,4 @@
-import { concatBytes, fromHex } from "./bytes.js";
+import { assertHash32, concatBytes } from "./bytes.js";
 import { EmptyBatch } from "./errors.js";
 import { hashBytes } from "./hash.js";
 import type { Hex } from "./types.js";
@@ -13,9 +13,14 @@ export interface MerkleTree {
   readonly layers: readonly Hex[][];
 }
 
-/** `keccak256(0x00 || contentHash)`. The `0x00` prefix marks this as a leaf. */
+/**
+ * `keccak256(0x00 || contentHash)`. The `0x00` prefix marks this as a
+ * leaf. Throws `InvalidHex` (via `assertHash32`) unless `contentHash` is
+ * exactly 32 bytes of hex — `contentHash` may have come straight from
+ * parsed JSON, so this isn't just a type-level guarantee.
+ */
 export function leafHash(contentHash: Hex): Hex {
-  return hashBytes(concatBytes(LEAF_PREFIX, fromHex(contentHash)));
+  return hashBytes(concatBytes(LEAF_PREFIX, assertHash32(contentHash)));
 }
 
 /**
@@ -23,11 +28,14 @@ export function leafHash(contentHash: Hex): Hex {
  * 256-bit unsigned integers. The `0x01` prefix marks this as an inner
  * node — distinct from a leaf's `0x00` prefix, which is what stops an
  * inner node from ever being mistaken for (or substituted as) a leaf.
- * Sorting the pair means callers never need to track left/right.
+ * Sorting the pair means callers never need to track left/right. Throws
+ * `InvalidHex` unless both `a` and `b` are exactly 32 bytes.
  */
 export function nodeHash(a: Hex, b: Hex): Hex {
-  const [low, high] = BigInt(a) <= BigInt(b) ? [a, b] : [b, a];
-  return hashBytes(concatBytes(NODE_PREFIX, fromHex(low), fromHex(high)));
+  const aBytes = assertHash32(a);
+  const bBytes = assertHash32(b);
+  const [low, high] = BigInt(a) <= BigInt(b) ? [aBytes, bBytes] : [bBytes, aBytes];
+  return hashBytes(concatBytes(NODE_PREFIX, low, high));
 }
 
 /**
@@ -86,11 +94,25 @@ export function getProof(tree: MerkleTree, index: number): Hex[] {
  * prefix), so passing an inner node's hash as `contentHash` can never
  * verify, even with a shortened proof — the domain separation blocks the
  * second-preimage forgery this guards against.
+ *
+ * `root`, `contentHash` and every element of `proof` are validated as
+ * 32-byte hex up front (throwing `InvalidHex` on anything else), since
+ * all three can come from untrusted input (a verifier page reading a
+ * receipt file, say) and a malformed one should fail loudly rather than
+ * just make this return `false`. The final comparison is case-insensitive
+ * — the contract compares raw `bytes32`, which doesn't care about hex
+ * case, so this shouldn't either.
  */
 export function verifyProof(root: Hex, contentHash: Hex, proof: readonly Hex[]): boolean {
+  assertHash32(root);
+  assertHash32(contentHash);
+  for (const sibling of proof) {
+    assertHash32(sibling);
+  }
+
   let computed = leafHash(contentHash);
   for (const sibling of proof) {
     computed = nodeHash(computed, sibling);
   }
-  return computed === root;
+  return computed.toLowerCase() === root.toLowerCase();
 }
