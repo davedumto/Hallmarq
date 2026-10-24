@@ -45,3 +45,8 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Gas and contract size report (informational, never fails CI)
+        if: always()
+        continue-on-error: true
+        run: pnpm run test:gas && pnpm run report:size
