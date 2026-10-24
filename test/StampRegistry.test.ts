@@ -236,6 +236,16 @@ describe("StampRegistry", () => {
       ).to.be.revertedWithCustomError(registry, "EmptyBatch");
     });
 
+    it("accepts a model label of exactly 64 bytes", async () => {
+      const { registry } = await deploy();
+      const model = "a".repeat(64);
+      expect(Buffer.byteLength(model, "utf8")).to.equal(64);
+
+      await expect(registry.stampRoot(ethers.id("root-model-64-bytes"), 1, model)).to.not.revert(
+        ethers,
+      );
+    });
+
     it("reverts with ModelTooLong for a model label of 65 bytes", async () => {
       const { registry } = await deploy();
       const model = "a".repeat(65);
