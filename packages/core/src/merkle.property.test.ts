@@ -1,4 +1,4 @@
-import { array, assert, nat, property, uint8Array } from "fast-check";
+import { array, assert, nat, oneof, property, uint8Array } from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { fromHex, toHex } from "./bytes.js";
@@ -6,7 +6,24 @@ import { buildTree, getProof, type MerkleTree, verifyProof } from "./merkle.js";
 import type { Hex } from "./types.js";
 
 const hexHashArb = uint8Array({ minLength: 32, maxLength: 32 }).map(toHex);
-const hashesArb = array(hexHashArb, { minLength: 1, maxLength: 500 });
+
+/**
+ * fast-check v4's default `size` caps generated array lengths well below
+ * `maxLength` regardless of what `maxLength` says (for this arbitrary,
+ * length 12 at most). `size: "max"` makes `maxLength` the real ceiling, so
+ * batches up to the spec's 500 actually get generated; mixing in a
+ * small-only arbitrary keeps low leaf counts (1-12) — where tree-shape edge
+ * cases like odd-node promotion live — from being drowned out by the much
+ * larger average size `size: "max"` produces.
+ */
+function hashesArbWithMin(minLength: number) {
+  return oneof(
+    array(hexHashArb, { minLength, maxLength: 20 }),
+    array(hexHashArb, { minLength, maxLength: 500, size: "max" }),
+  );
+}
+
+const hashesArb = hashesArbWithMin(1);
 
 function flipOneBit(hex: Hex): Hex {
   const bytes = fromHex(hex);
@@ -35,6 +52,10 @@ function getProofFromLayer(tree: MerkleTree, layer: number, index: number): Hex[
 }
 
 describe("Merkle tree properties (fast-check)", () => {
+  // Verifying every leaf of every run (up to 500 leaves, 100 runs) is
+  // O(n log n) hashing per run; well under a second uninstrumented, but
+  // v8 coverage instrumentation's overhead can push it past vitest's
+  // default 5s test timeout.
   it("every leaf's honest proof verifies, for random batches of 1-500 items", () => {
     assert(
       property(hashesArb, (hashes) => {
@@ -44,7 +65,7 @@ describe("Merkle tree properties (fast-check)", () => {
         }
       }),
     );
-  });
+  }, 30_000);
 
   it("flipping one bit in the root, the leaf, or a proof element breaks verification", () => {
     assert(
@@ -68,11 +89,17 @@ describe("Merkle tree properties (fast-check)", () => {
   });
 
   it("second-preimage: an inner node never verifies as if it were a leaf's contentHash", () => {
+    // minLength 3 guarantees a real inner layer distinct from both the
+    // leaves and the root (a 2-leaf tree's layers[1] is the root itself).
     assert(
-      property(array(hexHashArb, { minLength: 2, maxLength: 500 }), (hashes) => {
+      property(hashesArbWithMin(3), nat(), nat(), (hashes, layerSeed, indexSeed) => {
         const tree = buildTree(hashes);
-        const innerNode = tree.layers[1][0];
-        const shortenedProof = getProofFromLayer(tree, 1, 0);
+        const innerLayerCount = tree.layers.length - 2;
+        const layer = 1 + (layerSeed % innerLayerCount);
+        const innerLayer = tree.layers[layer];
+        const index = indexSeed % innerLayer.length;
+        const innerNode = innerLayer[index];
+        const shortenedProof = getProofFromLayer(tree, layer, index);
         expect(verifyProof(tree.root, innerNode, shortenedProof)).toBe(false);
       }),
     );
