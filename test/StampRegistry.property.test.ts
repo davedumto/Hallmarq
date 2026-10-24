@@ -50,7 +50,17 @@ const contentHashArb: fc.Arbitrary<Hex> = fc
   .uint8Array({ minLength: 32, maxLength: 32 })
   .map((bytes) => hex(ethers.hexlify(bytes)));
 
-const contentHashesArb = fc.array(contentHashArb, { minLength: 1, maxLength: 500 });
+// fast-check v4's default `size` caps generated array lengths well below
+// `maxLength` regardless of what `maxLength` says (12 at most for this
+// arbitrary), so the spec's "1 to 500" range was never actually being
+// generated. `size: "max"` makes `maxLength` the real ceiling; mixing in a
+// small-only arbitrary via `oneof` keeps low leaf counts (1-12) — where
+// tree-shape edge cases like odd-node promotion live — from being drowned
+// out by the much larger average size `size: "max"` produces.
+const contentHashesArb = fc.oneof(
+  fc.array(contentHashArb, { minLength: 1, maxLength: 20 }),
+  fc.array(contentHashArb, { minLength: 1, maxLength: 500, size: "max" }),
+);
 
 describe("StampRegistry property tests (spec: Testing plan -> Contract property)", () => {
   it("every honest proof verifies, and every tampered input is rejected", async function () {
@@ -59,6 +69,8 @@ describe("StampRegistry property tests (spec: Testing plan -> Contract property)
 
     const stampedRoots = new Set<Hex>();
     let previousRoot: Hex | undefined;
+
+    const sizes: number[] = [];
 
     console.log(`fast-check seed: ${FAST_CHECK_SEED}`);
     const start = Date.now();
@@ -69,7 +81,14 @@ describe("StampRegistry property tests (spec: Testing plan -> Contract property)
         fc.nat(),
         fc.nat(),
         fc.nat(),
-        async (contentHashes, rawLeafIndex, rawProofElementIndex, rawByteIndex) => {
+        fc.nat(),
+        async (
+          contentHashes,
+          rawLeafIndex,
+          rawProofElementIndex,
+          rawByteIndex,
+          rawInnerLayerIndex,
+        ) => {
           const tree = buildTree(contentHashes);
 
           // Skip (don't fail) if this exact root was already stamped by an
@@ -79,6 +98,7 @@ describe("StampRegistry property tests (spec: Testing plan -> Contract property)
           stampedRoots.add(tree.root);
 
           const n = contentHashes.length;
+          sizes.push(n);
           await registry.stampRoot(tree.root, n, "model");
 
           const randomIndex = rawLeafIndex % n;
@@ -132,15 +152,20 @@ describe("StampRegistry property tests (spec: Testing plan -> Contract property)
             ).to.equal(false);
           }
 
-          // (f) second preimage: an inner node (tree.layers[1]) passed as the
-          // contentHash, with the proof shortened to start from that layer
-          // instead of the leaf layer -> false. Only meaningful once there's
-          // a real inner layer distinct from both the leaves and the root.
+          // (f) second preimage: an inner node (tree.layers[1] or higher)
+          // passed as the contentHash, with the proof shortened to start
+          // from that layer instead of the leaf layer -> false. Picks a
+          // random inner layer, not always the one just above the leaves,
+          // so this also exercises nodes several levels up in deep trees.
+          // Only meaningful once there's a real inner layer distinct from
+          // both the leaves and the root.
           if (tree.layers.length >= 3) {
-            const innerLayer = tree.layers[1];
+            const innerLayerCount = tree.layers.length - 2;
+            const layer = 1 + (rawInnerLayerIndex % innerLayerCount);
+            const innerLayer = tree.layers[layer];
             const innerIndex = rawLeafIndex % innerLayer.length;
             const innerNode = innerLayer[innerIndex];
-            const shortenedProof = getProofFromLayer(tree, 1, innerIndex);
+            const shortenedProof = getProofFromLayer(tree, layer, innerIndex);
             expect(await registry.verifyInBatch(tree.root, innerNode, shortenedProof)).to.equal(
               false,
             );
@@ -161,6 +186,12 @@ describe("StampRegistry property tests (spec: Testing plan -> Contract property)
       { numRuns: 1000, seed: FAST_CHECK_SEED },
     );
 
-    console.log(`fast-check: 1000 runs in ${Date.now() - start}ms`);
+    const over100 = sizes.filter((n) => n > 100).length;
+    const mean = sizes.reduce((sum, n) => sum + n, 0) / sizes.length;
+    console.log(
+      `fast-check: ${sizes.length} runs in ${Date.now() - start}ms; ` +
+        `leaf count min ${Math.min(...sizes)}, max ${Math.max(...sizes)}, ` +
+        `mean ${mean.toFixed(1)}, runs with >100 leaves: ${over100}`,
+    );
   });
 });
