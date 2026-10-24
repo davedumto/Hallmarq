@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "pnpm --filter \"./packages/*\" run build && tsc -p tsconfig.json --noEmit",
-    "test": "pnpm run test:hardhat && pnpm --filter \"./packages/*\" run test",
+    "test": "pnpm --filter @hallmarq/core run build && pnpm run test:hardhat && pnpm --filter \"./packages/*\" run test",
     "test:hardhat": "hardhat test",
     "test:gas": "hardhat test --gas-stats",
     "report:size": "node tools/print-contract-size.mjs",
@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@hallmarq/core": "workspace:*",
     "@nomicfoundation/hardhat-ethers": "^4.2.1",
     "@nomicfoundation/hardhat-toolbox-mocha-ethers": "^4.0.0",
     "@types/chai": "^5.2.3",
@@ -35,6 +36,7 @@
     "eslint": "^10.13.0",
     "eslint-config-prettier": "^10.1.8",
     "ethers": "^6.17.0",
+    "fast-check": "^4.10.2",
     "globals": "^17.13.0",
     "hardhat": "^3.21.0",
     "mocha": "^12.0.3",
