@@ -13,7 +13,6 @@ export default tseslint.config(
       "cache/**",
       "typechain-types/**",
       "eslint.config.js",
-      "tools/**",
     ],
   },
   js.configs.recommended,
@@ -34,5 +33,11 @@ export default tseslint.config(
     rules: {
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
     },
+  },
+  {
+    // Plain JS tooling scripts: lint them, but without type-aware rules —
+    // they're not part of any package's tsconfig program.
+    files: ["tools/**/*.mjs"],
+    ...tseslint.configs.disableTypeChecked,
   },
 );
