@@ -13,19 +13,21 @@ const { MST_RPC_URL, MST_CHAIN_ID, DEPLOYER_PRIVATE_KEY } = process.env;
 
 // The mstTestnet network only exists once every variable it needs is set, so a
 // contributor without testnet credentials never sees a half-configured network.
-const networks: NetworksUserConfig = {
-  hardhatMainnet: {
-    type: "edr-simulated",
-    chainType: "l1",
-  },
-};
+// Local tests use Hardhat's built-in in-process network (via network.create()),
+// so there's no need to declare one here.
+const networks: NetworksUserConfig = {};
 
 if (MST_RPC_URL && MST_CHAIN_ID && DEPLOYER_PRIVATE_KEY) {
+  const chainId = Number(MST_CHAIN_ID);
+  if (!Number.isSafeInteger(chainId) || chainId <= 0) {
+    throw new Error(`MST_CHAIN_ID must be a positive integer, got "${MST_CHAIN_ID}"`);
+  }
+
   networks.mstTestnet = {
     type: "http",
     chainType: "l1",
     url: MST_RPC_URL,
-    chainId: Number(MST_CHAIN_ID),
+    chainId,
     accounts: [DEPLOYER_PRIVATE_KEY],
   };
 }
