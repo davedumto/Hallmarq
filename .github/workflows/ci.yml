@@ -50,3 +50,38 @@ jobs:
         if: always()
         continue-on-error: true
         run: pnpm run test:gas && pnpm run report:size
+
+  slither:
+    name: slither
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Route: crytic/slither-action against the Hardhat project directly.
+      # crytic-compile >=0.4.0 has explicit Hardhat-3 build-info parsing
+      # (its platform/hardhat.py reads the split build-info/<id>.output.json
+      # files Hardhat 3 writes, not just Hardhat 2's single combined file),
+      # so this is expected to read our build output correctly. See the PR
+      # description for whether this route worked or the direct-.sol-file
+      # fallback was needed instead.
+      - name: Slither
+        uses: crytic/slither-action@v0.4.2
+        with:
+          target: "."
+          node-version: "22"
+          solc-version: "0.8.26"
+          slither-version: "0.11.6"
+          fail-on: medium
