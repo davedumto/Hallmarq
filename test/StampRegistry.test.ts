@@ -1,3 +1,5 @@
+import { buildTree, getProof, leafHash, nodeHash } from "@hallmarq/core";
+import type { Hex } from "@hallmarq/core";
 import { expect } from "chai";
 import type { ContractTransactionResponse, EventLog, Log } from "ethers";
 import { network } from "hardhat";
@@ -6,15 +8,9 @@ const { ethers } = await network.create();
 
 const ZERO_HASH = ethers.ZeroHash;
 
-/** `keccak256(0x00 || contentHash)` — matches the contract's leaf prefix. */
-function leafHash(contentHash: string): string {
-  return ethers.keccak256(ethers.concat(["0x00", contentHash]));
-}
-
-/** `keccak256(0x01 || min || max)` — matches the contract's sorted-pair node prefix. */
-function nodeHash(a: string, b: string): string {
-  const [low, high] = BigInt(a) <= BigInt(b) ? [a, b] : [b, a];
-  return ethers.keccak256(ethers.concat(["0x01", low, high]));
+/** Casts an ethers hash (plain `string`) to `@hallmarq/core`'s `Hex` type. */
+function hex(value: string): Hex {
+  return value as Hex;
 }
 
 async function deploy() {
@@ -311,38 +307,46 @@ describe("StampRegistry", () => {
 
     it("returns true for a leaf reconstructed from a valid sibling proof", async () => {
       const { registry } = await deploy();
-      const contentHashA = ethers.id("batch-content-A");
-      const contentHashB = ethers.id("batch-content-B");
-      const leafA = leafHash(contentHashA);
-      const leafB = leafHash(contentHashB);
-      const root = nodeHash(leafA, leafB);
+      const contentHashA = hex(ethers.id("batch-content-A"));
+      const contentHashB = hex(ethers.id("batch-content-B"));
+      const tree = buildTree([contentHashA, contentHashB]);
+      expect(tree.root).to.equal(nodeHash(leafHash(contentHashA), leafHash(contentHashB)));
 
-      await registry.stampRoot(root, 2, "model");
+      await registry.stampRoot(tree.root, 2, "model");
 
-      expect(await registry.verifyInBatch(root, contentHashA, [leafB])).to.equal(true);
-      expect(await registry.verifyInBatch(root, contentHashB, [leafA])).to.equal(true);
+      expect(await registry.verifyInBatch(tree.root, contentHashA, getProof(tree, 0))).to.equal(
+        true,
+      );
+      expect(await registry.verifyInBatch(tree.root, contentHashB, getProof(tree, 1))).to.equal(
+        true,
+      );
     });
 
     it("returns false for a leaf paired with an unrelated sibling proof", async () => {
       const { registry } = await deploy();
-      const contentHashA = ethers.id("batch-content-C");
-      const contentHashB = ethers.id("batch-content-D");
-      const unrelatedLeaf = leafHash(ethers.id("batch-content-unrelated"));
-      const root = nodeHash(leafHash(contentHashA), leafHash(contentHashB));
+      const contentHashA = hex(ethers.id("batch-content-C"));
+      const contentHashB = hex(ethers.id("batch-content-D"));
+      const unrelatedLeaf = leafHash(hex(ethers.id("batch-content-unrelated")));
+      const tree = buildTree([contentHashA, contentHashB]);
 
-      await registry.stampRoot(root, 2, "model");
+      await registry.stampRoot(tree.root, 2, "model");
 
-      expect(await registry.verifyInBatch(root, contentHashA, [unrelatedLeaf])).to.equal(false);
+      expect(await registry.verifyInBatch(tree.root, contentHashA, [unrelatedLeaf])).to.equal(
+        false,
+      );
     });
 
     it("a batch of one has root = leafHash(contentHash) and an empty proof verifies", async () => {
       const { registry } = await deploy();
-      const contentHash = ethers.id("batch-of-one");
-      const root = leafHash(contentHash);
+      const contentHash = hex(ethers.id("batch-of-one"));
+      const tree = buildTree([contentHash]);
+      expect(tree.root).to.equal(leafHash(contentHash));
 
-      await registry.stampRoot(root, 1, "model");
+      await registry.stampRoot(tree.root, 1, "model");
 
-      expect(await registry.verifyInBatch(root, contentHash, [])).to.equal(true);
+      expect(await registry.verifyInBatch(tree.root, contentHash, getProof(tree, 0))).to.equal(
+        true,
+      );
     });
   });
 });
