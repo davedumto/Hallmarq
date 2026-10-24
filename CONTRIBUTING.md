@@ -10,10 +10,27 @@
 - One roadmap PR per branch. Don't bundle unrelated changes.
 - Conventional commits (`feat(core): ...`, `test(contract): ...`, `fix(sdk): ...`).
 - Before you push, run `pnpm lint && pnpm format:check && pnpm build && pnpm test`.
-- Open the PR with the template filled in. Then address every review comment with
-  a push or a reply saying why not.
+- Open the PR with **every section of the template filled in** (see "PR descriptions" below).
+  Then address every review comment with a push or a reply saying why not.
+
+## PR descriptions
+
+PRs are the project's long-term record. The description has to make sense to someone
+reading it a year from now without this conversation. That means it covers:
+
+- what changed and **why**, linked to the roadmap item and spec IDs (F1–F5, N1–N5, D1…)
+- the decisions made, and the alternatives rejected
+- exactly how it was tested, with output (test summary, gas table, coverage, screenshots)
+- the effect on security and privacy
+- known limitations, follow-ups, and where reviewers should look hardest
+
+A PR with a thin or partly empty description gets "changes requested" before the code is reviewed.
+If the code changes during review, update the description to match before merge.
 
 ## What review checks (the CTO's checklist)
+
+**PR description**
+- Every template section is filled in and matches the final code.
 
 **Spec fidelity**
 - Behaviour matches the spec + `docs/DECISIONS.md`. Any deviation is called out in the PR.

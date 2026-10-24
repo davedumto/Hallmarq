@@ -8,7 +8,8 @@ below comes with a **prompt**: paste it to the engineer (human or AI) as-is.
 1. The engineer branches from `dev` as `feat/<nn>-<slug>` (e.g. `feat/02-core-hashing`) and
    opens the PR against `dev`.
 2. They implement the prompt, run `pnpm lint && pnpm test` locally, and open a PR
-   using the template.
+   with **every section of `.github/pull_request_template.md` filled in**. The PR description is
+   the permanent record of the change (see CONTRIBUTING.md, "PR descriptions").
 3. The CTO reviews against `CONTRIBUTING.md`. The engineer addresses every comment
    or replies with a reason, then pushes.
 4. Squash-merge once CI is green and the CTO approves. The next PR starts from the
@@ -58,6 +59,9 @@ These aren't engineering tasks. The engineer must not guess these values.
 >
 > Done when: a fresh clone runs `pnpm i && pnpm lint && pnpm build && pnpm test` green, and CI passes.
 > No product code in this PR.
+>
+> PR description: fill in every section of `.github/pull_request_template.md`. Write it for a
+> reader a year from now: the why, the decisions and the alternatives, test evidence, and follow-ups.
 
 ---
 
@@ -92,6 +96,9 @@ These aren't engineering tasks. The engineer must not guess these values.
 >
 > Done when: all vectors match the spec byte for byte, coverage of `src/` is at least 95%, and the
 > package has zero runtime deps beyond the keccak implementation.
+>
+> PR description: fill in every section of `.github/pull_request_template.md`. Write it for a
+> reader a year from now: the why, the decisions and the alternatives, test evidence, and follow-ups.
 
 ---
 
@@ -116,6 +123,9 @@ These aren't engineering tasks. The engineer must not guess these values.
 > gas table into the PR description.
 >
 > Done when: all tests pass, `solhint` is clean, and the compile has no warnings.
+>
+> PR description: fill in every section of `.github/pull_request_template.md`. Write it for a
+> reader a year from now: the why, the decisions and the alternatives, test evidence, and follow-ups.
 
 ---
 
@@ -139,6 +149,9 @@ These aren't engineering tasks. The engineer must not guess these values.
 >
 > Done when: the property tests pass with 1000 runs in under ~2 minutes in CI and Slither has no
 > undocumented findings.
+>
+> PR description: fill in every section of `.github/pull_request_template.md`. Write it for a
+> reader a year from now: the why, the decisions and the alternatives, test evidence, and follow-ups.
 
 ---
 
@@ -161,6 +174,9 @@ These aren't engineering tasks. The engineer must not guess these values.
 >
 > Done when: the explorer shows verified source, the smoke test passes, and
 > `deployments/mstTestnet.json` is committed. Never commit keys.
+>
+> PR description: fill in every section of `.github/pull_request_template.md`. Write it for a
+> reader a year from now: the why, the decisions and the alternatives, test evidence, and follow-ups.
 
 ---
 
@@ -194,6 +210,9 @@ These aren't engineering tasks. The engineer must not guess these values.
 > - README in the package showing the three-line usage from the spec.
 >
 > Done when: the tests pass, and the bundle doesn't import Node built-ins, so it runs in browsers and Node.
+>
+> PR description: fill in every section of `.github/pull_request_template.md`. Write it for a
+> reader a year from now: the why, the decisions and the alternatives, test evidence, and follow-ups.
 
 ---
 
@@ -217,6 +236,9 @@ These aren't engineering tasks. The engineer must not guess these values.
 >   models get separate batches, the no-resend rule, `NotConfirmed`, and a 1-item batch has an empty proof.
 >
 > Done when: the tests pass and every receipt from a batch verifies with `verifyInBatch` on-chain.
+>
+> PR description: fill in every section of `.github/pull_request_template.md`. Write it for a
+> reader a year from now: the why, the decisions and the alternatives, test evidence, and follow-ups.
 
 ---
 
@@ -244,6 +266,9 @@ These aren't engineering tasks. The engineer must not guess these values.
 >
 > Done when: the Playwright test passes, the built page has no third-party requests, and the bundle is
 > under 250 KB gzipped.
+>
+> PR description: fill in every section of `.github/pull_request_template.md`. Write it for a
+> reader a year from now: the why, the decisions and the alternatives, test evidence, and follow-ups.
 
 ---
 
@@ -261,6 +286,9 @@ These aren't engineering tasks. The engineer must not guess these values.
 >   filled in with measured numbers, plus the break-even N.
 >
 > Done when: an e2e run is green and linked in the PR, and `docs/COSTS.md` holds real numbers.
+>
+> PR description: fill in every section of `.github/pull_request_template.md`. Write it for a
+> reader a year from now: the why, the decisions and the alternatives, test evidence, and follow-ups.
 
 ---
 
@@ -276,3 +304,6 @@ These aren't engineering tasks. The engineer must not guess these values.
 > - Tag `v0.1.0`. Publish `@hallmarq/core` and `@hallmarq/sdk` to npm only if the founder says so.
 >
 > Done when: someone new can stamp and verify from the README alone.
+>
+> PR description: fill in every section of `.github/pull_request_template.md`. Write it for a
+> reader a year from now: the why, the decisions and the alternatives, test evidence, and follow-ups.
