@@ -1,0 +1,133 @@
+{
+  "$comment": "Shared test vectors for Hallmarq (docs/DECISIONS.md D2). Every package's test suite loads this file so the SDK and the verifier page are checked against the exact same values as @hallmarq/core (F5). Text inputs are JSON strings; every non-ASCII or control character in them is written as a \\u escape on purpose (not relying on an editor/formatter to preserve raw invisible characters byte-for-byte). Byte inputs are '0x'-prefixed hex. 'hashing.text[].contentHash' is hashText(input); 'hashing.bytes[].hash' is hashBytes(bytes) with no normalization; 'hashing.bytes[].hashTextResult'/'hashTextThrows' describe hashText(bytes) separately, since bytes go through strict UTF-8 decoding first. The two 'spec' vectors and the 'merkle.abc' example come from docs/Hallmarq_Technical_Documentation.pdf ('Hashing specification' / 'Merkle batch specification'), verified independently per docs/DECISIONS.md D10. Every other vector was produced by running this package's own implementation against the given input, documented case by case in the PR.",
+  "hashing": {
+    "text": [
+      {
+        "name": "spec vector 1: plain text, unchanged by normalization",
+        "input": "Hello, StampAI.",
+        "normalized": "Hello, StampAI.",
+        "contentHash": "0xd43d62a35d867840308edfb930a8716d939d78e3d38dff6a0b263a358a55a7c1"
+      },
+      {
+        "name": "spec vector 2: CRLF line endings and trailing spaces normalize away",
+        "input": "Hello, StampAI.  \r\nSecond line.\r\n\r\n",
+        "normalized": "Hello, StampAI.\nSecond line.",
+        "contentHash": "0x644f125e4c4fbfbcce78a3a427e043f1a4b1e2e1fd6b092bfaa325a67e206acd"
+      },
+      {
+        "name": "NBSP (U+00A0) at the end of the text is kept, not stripped as whitespace",
+        "input": "Hello\u00a0",
+        "normalized": "Hello\u00a0",
+        "contentHash": "0x14c878b1d705c5e85311acf39837f476f436684498518f861b9022f1b2cacf98"
+      },
+      {
+        "name": "a lone CR (not part of CRLF) normalizes to LF",
+        "input": "Hello\rWorld",
+        "normalized": "Hello\nWorld",
+        "contentHash": "0xbe17225b3868efa607c97165f216b7916e269abea94fd62192cee510d35d549b"
+      },
+      {
+        "name": "a tab at the end of a line is stripped, same result as the lone-CR case",
+        "input": "Hello\t\nWorld",
+        "normalized": "Hello\nWorld",
+        "contentHash": "0xbe17225b3868efa607c97165f216b7916e269abea94fd62192cee510d35d549b"
+      },
+      {
+        "name": "leading whitespace is kept, not stripped",
+        "input": "  Hello",
+        "normalized": "  Hello",
+        "contentHash": "0xc366c187c3265af9a8946fa9e80029d86b0aae6911117d651b63c3573d8b727d"
+      },
+      {
+        "name": "NFC \u00e9 (U+00E9, one codepoint) is not normalized to NFD, and hashes differently from it",
+        "input": "caf\u00e9",
+        "normalized": "caf\u00e9",
+        "contentHash": "0x9513447e2d376aacd434727887590dd448cda8f2d30c4ace903d31fe209f8ad8"
+      },
+      {
+        "name": "NFD \u00e9 (U+0065 U+0301, e + combining acute) is not normalized to NFC, and hashes differently from it",
+        "input": "cafe\u0301",
+        "normalized": "cafe\u0301",
+        "contentHash": "0xe7739d357b90d35469fb9a3a5da362861a02e02c559108dc70489172a29a2fb4"
+      },
+      {
+        "name": "a leading byte-order mark (U+FEFF) in a string is content, not something to strip",
+        "input": "\ufeffHello",
+        "normalized": "\ufeffHello",
+        "contentHash": "0xc065bf40f46e1ccb1b6f566ed7615339cdd1c576e5fc635b463c127b4b1f5702"
+      },
+      {
+        "name": "empty text normalizes to empty text",
+        "input": "",
+        "normalized": "",
+        "contentHash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+      },
+      {
+        "name": "whitespace-only text (spaces, a tab, a newline) normalizes to empty text, same hash as the empty-text case",
+        "input": "   \t\n  ",
+        "normalized": "",
+        "contentHash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+      },
+      {
+        "name": "the letter A, used as a Merkle leaf below",
+        "input": "A",
+        "normalized": "A",
+        "contentHash": "0x03783fac2efed8fbc9ad443e592ee30e61d65f471140c10ca155e937b435b760"
+      },
+      {
+        "name": "the letter B, used as a Merkle leaf below",
+        "input": "B",
+        "normalized": "B",
+        "contentHash": "0x1f675bff07515f5df96737194ea945c36c41e7b4fcef307b7cd4d0e602a69111"
+      },
+      {
+        "name": "the letter C, used as a Merkle leaf below",
+        "input": "C",
+        "normalized": "C",
+        "contentHash": "0x017e667f4b8c174291d1543c466717566e206df1bfd6f30271055ddafdb18f72"
+      }
+    ],
+    "bytes": [
+      {
+        "name": "spec vector 2's raw bytes hashed with no normalization, for comparison with the text vector above",
+        "inputHex": "0x48656c6c6f2c205374616d7041492e20200d0a5365636f6e64206c696e652e0d0a0d0a",
+        "hash": "0x0816f49680ddc7160a0f40159cc485b50c57b9493f777f35b63c820d9f8505b9"
+      },
+      {
+        "name": "invalid UTF-8 (a lone 0xFF byte, never a valid leading byte): hashBytes never looks at UTF-8 validity, hashText throws InvalidUtf8",
+        "inputHex": "0xff",
+        "hash": "0x8b1a944cf13a9a1c08facb2c9e98623ef3254d2ddb48113885c3e8e97fec8db9",
+        "hashTextThrows": "InvalidUtf8"
+      },
+      {
+        "name": "bytes starting with a UTF-8 BOM (EF BB BF) + \"Hello\": hashBytes hashes the raw bytes (no normalization); hashText decodes with the BOM kept (ignoreBOM) and gives the same contentHash as the \\uFEFF-prefixed string vector above",
+        "inputHex": "0xefbbbf48656c6c6f",
+        "hash": "0xc065bf40f46e1ccb1b6f566ed7615339cdd1c576e5fc635b463c127b4b1f5702",
+        "hashTextResult": "0xc065bf40f46e1ccb1b6f566ed7615339cdd1c576e5fc635b463c127b4b1f5702"
+      }
+    ]
+  },
+  "merkle": {
+    "abc": {
+      "$comment": "The spec's worked example: three items, the strings A, B and C, hashed directly as UTF-8 (their contentHash values are the A/B/C entries in hashing.text above).",
+      "contentHashA": "0x03783fac2efed8fbc9ad443e592ee30e61d65f471140c10ca155e937b435b760",
+      "contentHashB": "0x1f675bff07515f5df96737194ea945c36c41e7b4fcef307b7cd4d0e602a69111",
+      "contentHashC": "0x017e667f4b8c174291d1543c466717566e206df1bfd6f30271055ddafdb18f72",
+      "leafA": "0x55f349f6522044c9a77cb1f0c1e5c163b7905fa659abb4fed210ac8edefd6eb5",
+      "leafB": "0x6e54f249b3a06dd774b95c8cc3b224c2af3e2abec031a82a0b83dddfa7459b1b",
+      "leafC": "0x102b526fdb64add4fe15c0d20bc310b7d4aa6db14f3175484ec8775f40acf0b0",
+      "nodeAB": "0xa39369d497651a3868c1dc53d267b09a133ab055be78542f2f70e47d5be2d313",
+      "root": "0xf0ea196d1197d65be1e15bf066760389c1301856f4de16b280ef6fc4f55275c0",
+      "proofA": [
+        "0x6e54f249b3a06dd774b95c8cc3b224c2af3e2abec031a82a0b83dddfa7459b1b",
+        "0x102b526fdb64add4fe15c0d20bc310b7d4aa6db14f3175484ec8775f40acf0b0"
+      ],
+      "proofC": ["0xa39369d497651a3868c1dc53d267b09a133ab055be78542f2f70e47d5be2d313"]
+    },
+    "single": {
+      "$comment": "A batch of one: root = leafHash(contentHash), no proof needed.",
+      "contentHash": "0x03783fac2efed8fbc9ad443e592ee30e61d65f471140c10ca155e937b435b760",
+      "root": "0x55f349f6522044c9a77cb1f0c1e5c163b7905fa659abb4fed210ac8edefd6eb5"
+    }
+  }
+}
