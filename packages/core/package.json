@@ -19,9 +19,16 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "clean": "rm -rf dist"
+    "coverage": "vitest run --coverage",
+    "clean": "rm -rf dist coverage"
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.4.0"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@vitest/coverage-v8": "^5.0.5",
+    "fast-check": "^4.10.2",
     "typescript": "^6.0.3",
     "vitest": "^5.0.5"
   }

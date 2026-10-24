@@ -1,3 +1,9 @@
-// Placeholder entry point for @hallmarq/core.
-// Normalization, hashing and Merkle tree logic land in PR 2.
-export const PACKAGE_NAME = "@hallmarq/core";
+export type { Hex } from "./types.js";
+
+export { normalizeText } from "./normalize.js";
+export { hashText, hashBytes } from "./hash.js";
+export { leafHash, nodeHash, buildTree, getProof, verifyProof } from "./merkle.js";
+export type { MerkleTree } from "./merkle.js";
+export { HallmarqError, InvalidUtf8, EmptyContent, EmptyBatch } from "./errors.js";
+export { hardhat, mstTestnet } from "./networks.js";
+export type { NetworkConfig } from "./networks.js";
