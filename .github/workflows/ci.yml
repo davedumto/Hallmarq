@@ -43,6 +43,13 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: ABI drift check (packages/sdk/src/generated/stampRegistryAbi.ts)
+        run: |
+          pnpm exec hardhat compile
+          node tools/export-abi.mjs
+          pnpm exec prettier --write packages/sdk/src/generated/stampRegistryAbi.ts
+          git diff --exit-code -- packages/sdk/src/generated/stampRegistryAbi.ts
+
       - name: Test
         run: pnpm test
 

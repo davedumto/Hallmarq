@@ -12,6 +12,7 @@ export default tseslint.config(
       "artifacts/**",
       "cache/**",
       "typechain-types/**",
+      "types/**",
       "eslint.config.js",
     ],
   },
