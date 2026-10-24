@@ -30,28 +30,34 @@ If the code changes during review, update the description to match before merge.
 ## What review checks (the CTO's checklist)
 
 **PR description**
+
 - Every template section is filled in and matches the final code.
 
 **Spec fidelity**
+
 - Behaviour matches the spec + `docs/DECISIONS.md`. Any deviation is called out in the PR.
 - Hashing goes through `@hallmarq/core` only. No second implementation anywhere.
 
 **Contract** (zero tolerance, because deployed records are permanent)
+
 - No owner, proxy, `selfdestruct`, `delegatecall` or delete path (N2).
 - Every revert path has a test. Every event field is asserted.
 - No new storage or features without a DECISIONS entry.
 
 **Privacy (N1)**
+
 - Content, prompts and user data never leave the device. Only hashes and RPC calls
   go over the network.
 - The verifier has no third-party requests: no analytics, CDNs or fonts.
 
 **Code quality**
+
 - TypeScript strict, no `any` without a comment, and no unhandled promises.
 - Errors are typed (`HallmarqError` subclasses) and never swallowed.
 - Secrets come only from env. `.env` is never committed.
 
 **Tests**
+
 - New behaviour has tests, and bug fixes come with a test that fails without the fix.
 - Shared vectors (`vectors/vectors.json`) still pass in every package.
 - Never skip or disable a test to get green.

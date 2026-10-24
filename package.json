@@ -1,0 +1,44 @@
+{
+  "name": "hallmarq",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Hallmarq records a fingerprint of AI-generated content on MST Blockchain.",
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "pnpm@9.15.9+sha512.68046141893c66fad01c079231128e9afb89ef87e2691d69e4d40eee228988295fd4682181bae55b58418c3a253bde65a505ec7c5f9403ece5cc3cd37dcf2531",
+  "engines": {
+    "node": "22.x",
+    "pnpm": "9.x"
+  },
+  "scripts": {
+    "build": "pnpm --filter \"./packages/*\" run build && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run test:hardhat && pnpm --filter \"./packages/*\" run test",
+    "test:hardhat": "hardhat test",
+    "lint": "eslint . && pnpm run lint:sol",
+    "lint:sol": "node tools/lint-solidity.mjs",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "clean": "pnpm --filter \"./packages/*\" run clean && rm -rf artifacts cache typechain-types"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@nomicfoundation/hardhat-ethers": "^4.2.1",
+    "@nomicfoundation/hardhat-toolbox-mocha-ethers": "^4.0.0",
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.20.5",
+    "chai": "^6.3.0",
+    "dotenv": "^18.0.9",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "ethers": "^6.17.0",
+    "globals": "^17.13.0",
+    "hardhat": "^3.21.0",
+    "mocha": "^12.0.3",
+    "prettier": "^3.9.10",
+    "solhint": "^6.2.5",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.0"
+  }
+}
