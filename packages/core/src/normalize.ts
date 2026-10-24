@@ -9,13 +9,60 @@ const CARRIAGE_RETURN = "\r";
  * Decodes bytes as strict UTF-8, throwing {@link InvalidUtf8} on anything
  * that isn't. `TextDecoder` is a Web API available in both Node and
  * browsers, so this has no platform-specific dependency.
+ *
+ * `ignoreBOM: true` is required even though it reads backwards: the
+ * default (`false`) makes `TextDecoder` treat a leading U+FEFF as a byte-order
+ * mark and silently remove it. The spec leaves leading content untouched,
+ * and a dropped BOM would make the same bytes hash differently than the
+ * equivalent string (which never loses its leading byte-order mark) — an
+ * F5 violation.
  */
 function decodeUtf8Strict(bytes: Uint8Array): string {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw new InvalidUtf8();
   }
+}
+
+/**
+ * True if `text` contains a UTF-16 surrogate code unit with no matching
+ * partner — i.e. `text` has no UTF-8 encoding at all. A plain JS string
+ * can hold these (e.g. `"\uD800"`); `TextEncoder` would silently replace
+ * each one with U+FFFD, letting unrelated inputs collide on the same hash.
+ *
+ * Equivalent to `!text.isWellFormed()` (ES2024), reimplemented by hand so
+ * this package doesn't have to raise its `lib` target off ES2022 — see the
+ * PR description for why that matters here.
+ */
+function hasUnpairedSurrogate(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      // High surrogate: must be immediately followed by a low surrogate.
+      // charCodeAt returns NaN past the end of the string, and every
+      // comparison with NaN is false, so that case is checked explicitly
+      // rather than relying on the range check to catch it.
+      const next = text.charCodeAt(i + 1);
+      if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff) {
+        return true;
+      }
+      i += 1; // The low surrogate is consumed as part of this pair.
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      // A low surrogate reached without first consuming its high surrogate
+      // above is, by construction, unpaired.
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Throws {@link InvalidUtf8} if `text` has no valid UTF-8 encoding. */
+function assertWellFormed(text: string): string {
+  if (hasUnpairedSurrogate(text)) {
+    throw new InvalidUtf8();
+  }
+  return text;
 }
 
 /**
@@ -70,7 +117,7 @@ function stripTrailingTextWhitespace(text: string): string {
  * content, not formatting noise.
  */
 export function normalizeText(input: string | Uint8Array): string {
-  const text = typeof input === "string" ? input : decodeUtf8Strict(input);
+  const text = typeof input === "string" ? assertWellFormed(input) : decodeUtf8Strict(input);
   const withUnixNewlines = normalizeLineEndings(text);
   const withoutTrailingLineWhitespace = stripTrailingLineWhitespace(withUnixNewlines);
   return stripTrailingTextWhitespace(withoutTrailingLineWhitespace);

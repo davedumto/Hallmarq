@@ -31,11 +31,11 @@ describe("normalizeText", () => {
   });
 
   it("keeps NBSP (U+00A0) and other Unicode whitespace, trailing or not", () => {
-    const withNbsp = "a  \nb ";
+    const withNbsp = "a\u00a0 \nb\u00a0";
     // Trailing ASCII space after the NBSP on line 1 is stripped; the NBSP
     // itself, and the trailing NBSP on line 2 (now the end of the text),
     // are both kept.
-    expect(normalizeText(withNbsp)).toBe("a \nb ");
+    expect(normalizeText(withNbsp)).toBe("a\u00a0\nb\u00a0");
   });
 
   it("keeps leading whitespace untouched", () => {
@@ -43,8 +43,8 @@ describe("normalizeText", () => {
   });
 
   it("does not apply Unicode normalization (NFC and NFD stay distinct)", () => {
-    const nfc = "café";
-    const nfd = "café";
+    const nfc = "caf\u00e9";
+    const nfd = "cafe\u0301";
     expect(normalizeText(nfc)).toBe(nfc);
     expect(normalizeText(nfd)).toBe(nfd);
     expect(nfc).not.toBe(nfd);
@@ -57,7 +57,48 @@ describe("normalizeText", () => {
 
   it("does not use trim()/trimEnd() semantics: NBSP survives at the very end", () => {
     // A naive trimEnd() implementation would strip this; ours must not.
-    expect(normalizeText("hi ")).toBe("hi ");
-    expect(normalizeText("hi ").trimEnd()).not.toBe("hi ");
+    expect(normalizeText("hi\u00a0")).toBe("hi\u00a0");
+    expect(normalizeText("hi\u00a0").trimEnd()).not.toBe("hi\u00a0");
+  });
+
+  describe("byte-order mark (BOM)", () => {
+    it("decodes a leading UTF-8 BOM as a literal U+FEFF, not as a marker to strip", () => {
+      // EF BB BF is the UTF-8 encoding of U+FEFF, followed by "Hello".
+      const bomBytes = new Uint8Array([0xef, 0xbb, 0xbf, 0x48, 0x65, 0x6c, 0x6c, 0x6f]);
+      expect(normalizeText(bomBytes)).toBe("\ufeffHello");
+    });
+
+    it("gives bytes with a BOM the same normalized text as the equivalent string", () => {
+      const bomBytes = new Uint8Array([0xef, 0xbb, 0xbf, 0x48, 0x65, 0x6c, 0x6c, 0x6f]);
+      expect(normalizeText(bomBytes)).toBe(normalizeText("\ufeffHello"));
+    });
+
+    it("a BOM is content: it changes the normalized result relative to no BOM", () => {
+      const bomBytes = new Uint8Array([0xef, 0xbb, 0xbf, 0x48, 0x65, 0x6c, 0x6c, 0x6f]);
+      expect(normalizeText(bomBytes)).not.toBe(normalizeText("Hello"));
+    });
+  });
+
+  describe("unpaired surrogates", () => {
+    it("throws InvalidUtf8 for a lone high surrogate", () => {
+      expect(() => normalizeText("a\ud800b")).toThrow(InvalidUtf8);
+      expect(() => normalizeText("\ud800")).toThrow(InvalidUtf8);
+    });
+
+    it("throws InvalidUtf8 for a lone low surrogate", () => {
+      expect(() => normalizeText("a\udc00b")).toThrow(InvalidUtf8);
+      expect(() => normalizeText("\udc00")).toThrow(InvalidUtf8);
+    });
+
+    it("accepts a correctly paired surrogate (a real emoji)", () => {
+      const grinningFace = "\ud83d\ude00"; // U+1F600, a valid surrogate pair
+      expect(() => normalizeText(grinningFace)).not.toThrow();
+      expect(normalizeText(grinningFace)).toBe(grinningFace);
+    });
+
+    it("does not throw for the equivalent bytes (TextDecoder can't produce unpaired surrogates)", () => {
+      const grinningFaceBytes = new TextEncoder().encode("\ud83d\ude00");
+      expect(() => normalizeText(grinningFaceBytes)).not.toThrow();
+    });
   });
 });
