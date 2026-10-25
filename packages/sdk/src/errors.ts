@@ -107,6 +107,37 @@ export class Closed extends HallmarqError {
   }
 }
 
+/**
+ * Thrown when the node rejects the nonce this instance explicitly assigned
+ * (`NONCE_EXPIRED`, "nonce too low", or a lookup that can't confirm the
+ * broadcast landed) and it wasn't simply this same transaction already
+ * going through. This instance's local nonce tracking has drifted from
+ * what the node actually expects — most often because an earlier
+ * transaction from this address never landed where this instance assumed
+ * it would (a different process or instance sharing the same key, or a
+ * stale in-memory count after a restart). The next send re-reads the
+ * node's own "pending" count from scratch; this one is never resigned and
+ * resent automatically, since that would risk a second, independently
+ * signed transaction for the same content — see the README's
+ * "Retries/nonces" section.
+ */
+export class NonceOutOfSync extends HallmarqError {
+  readonly code = "NONCE_OUT_OF_SYNC";
+  readonly nonce: number;
+  readonly cause: unknown;
+
+  constructor(
+    nonce: number,
+    cause: unknown,
+    message = `Nonce ${nonce} was rejected by the node; local nonce tracking has been reset`,
+  ) {
+    super(message);
+    this.name = "NonceOutOfSync";
+    this.nonce = nonce;
+    this.cause = cause;
+  }
+}
+
 /** Thrown before the first write if the provider's chain ID doesn't match the configured one. */
 export class WrongNetwork extends HallmarqError {
   readonly code = "WRONG_NETWORK";

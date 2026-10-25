@@ -32,6 +32,7 @@ import {
   Closed,
   ConfigError,
   ModelTooLong,
+  NonceOutOfSync,
   NoSigner,
   NotConfirmed,
   WrongNetwork,
@@ -200,6 +201,16 @@ export class Hallmarq {
    * to send themselves.
    */
   readonly #inFlightSends = new Set<Promise<void>>();
+  /**
+   * This instance's own record of the next nonce to use, kept because some
+   * nodes' `eth_getTransactionCount(address, "pending")` doesn't include a
+   * transaction this instance has already broadcast but that hasn't been
+   * mined yet (MST's testnet node observed doing this — see the README's
+   * "Retries/nonces" section). `undefined` means "unknown; trust the
+   * node's own count next time", which is also the state after a
+   * {@link NonceOutOfSync} resync.
+   */
+  #nextNonce: number | undefined;
 
   constructor(options: HallmarqOptions = {}) {
     const rpcUrl = options.rpcUrl ?? mstTestnet.rpcUrl;
@@ -349,36 +360,62 @@ export class Hallmarq {
    * The whole populate/sign/broadcast (or fallback-send) section runs
    * under {@link Hallmarq.#withSendLock}, so two calls on this instance
    * never race for the same nonce; see that method's doc for why.
+   *
+   * The nonce itself is assigned explicitly — `max(#nextNonce, the node's
+   * own "pending" count)` — rather than left for `signer.populateTransaction`
+   * to resolve, because a serialized nonce from `#nextNonce` alone isn't
+   * enough on a node whose "pending" count lags behind what this instance
+   * has already broadcast (see {@link Hallmarq.#nextNonce}'s doc). If the
+   * node rejects that nonce outright (not simply this same transaction
+   * already landed), {@link Hallmarq.#nextNonce} is cleared and this send
+   * fails with {@link NonceOutOfSync} rather than silently resigning and
+   * resending — the no-resend rule applies here too.
    */
   async #signAndBroadcast(
     populateTx: () => Promise<ContractTransaction>,
-    fallbackSend: () => Promise<TransactionResponse>,
+    fallbackSend: (nonce: number) => Promise<TransactionResponse>,
   ): Promise<TransactionResponse> {
     return this.#withSendLock(async () => {
       const signer = this.#signer!;
+      const address = await signer.getAddress();
+      const nonce = Math.max(
+        await this.#provider.getTransactionCount(address, "pending"),
+        this.#nextNonce ?? 0,
+      );
 
       const populatedCall = await populateTx();
-      const populated = await signer.populateTransaction(populatedCall);
+      const populated = await signer.populateTransaction({ ...populatedCall, nonce });
 
       let raw: string;
       try {
         raw = await signer.signTransaction(populated);
       } catch (error) {
         if (isUnsupportedSigning(error)) {
-          return await fallbackSend();
+          const tx = await fallbackSend(nonce);
+          this.#nextNonce = nonce + 1;
+          return tx;
         }
         throw error;
       }
 
       const txHash = keccak256(raw);
       try {
-        return await withRetry(() => this.#provider.broadcastTransaction(raw));
+        const tx = await withRetry(() => this.#provider.broadcastTransaction(raw));
+        this.#nextNonce = nonce + 1;
+        return tx;
       } catch (error) {
         if (isAlreadyBroadcastError(error)) {
           const existing = await this.#provider.getTransaction(txHash);
           if (existing) {
+            this.#nextNonce = nonce + 1;
             return existing;
           }
+          // The node rejected this nonce, and it isn't because this exact
+          // transaction already landed: this instance's nonce tracking has
+          // drifted from what the node expects. Resync — the next send
+          // re-reads "pending" from scratch — and fail this one outright.
+          this.#nextNonce = undefined;
+          throw new NonceOutOfSync(nonce, error);
         }
         if (isRetryableError(error)) {
           // Every attempt failed as a transport error, so the broadcast's
@@ -401,7 +438,10 @@ export class Hallmarq {
     const signerContract = this.#signerContract!;
     return this.#signAndBroadcast(
       () => signerContract.stamp.populateTransaction(contentHash, model, metaHash),
-      () => signerContract.stamp(contentHash, model, metaHash) as Promise<TransactionResponse>,
+      (nonce) =>
+        signerContract.stamp(contentHash, model, metaHash, {
+          nonce,
+        }) as Promise<TransactionResponse>,
     );
   }
 
@@ -413,7 +453,10 @@ export class Hallmarq {
     const signerContract = this.#signerContract!;
     return this.#signAndBroadcast(
       () => signerContract.stampRoot.populateTransaction(root, count, model),
-      () => signerContract.stampRoot(root, count, model) as Promise<TransactionResponse>,
+      (nonce) =>
+        signerContract.stampRoot(root, count, model, {
+          nonce,
+        }) as Promise<TransactionResponse>,
     );
   }
 
