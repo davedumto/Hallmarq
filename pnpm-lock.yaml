@@ -23,9 +23,6 @@ importers:
       '@nomicfoundation/hardhat-toolbox-mocha-ethers':
         specifier: ^4.0.0
         version: 4.0.0(dnpllxn5bgehe4gtjmxxc5decq)
-      '@nomicfoundation/hardhat-verify':
-        specifier: ^3.1.4
-        version: 3.1.4(hardhat@3.21.0)
       '@types/chai':
         specifier: ^5.2.3
         version: 5.2.3

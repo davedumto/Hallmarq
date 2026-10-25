@@ -32,6 +32,44 @@ function explorerTxLink(txHash: string): string {
   return `${EXPLORER_URL}/tx/${txHash}`;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Retries a read-after-confirm verify call a few times, 2s apart. MST's node
+// has shown read-after-write lag right after a send is confirmed, so a
+// "not-found"/"found" mismatch immediately afterward can be transient. Never
+// used for sends: a send either lands or is handled as a failed item.
+async function withReadRetry<T>(
+  label: string,
+  read: () => Promise<T>,
+  isAcceptable: (result: T) => boolean,
+  attempts = 3,
+  delayMs = 2000,
+): Promise<T> {
+  let lastResult: T | undefined;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const result = await read();
+      if (isAcceptable(result)) {
+        return result;
+      }
+      lastResult = result;
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt < attempts) {
+      console.log(`    ${label}: retrying in ${delayMs}ms (attempt ${attempt}/${attempts})`);
+      await sleep(delayMs);
+    }
+  }
+  if (lastResult !== undefined) {
+    return lastResult;
+  }
+  throw lastError;
+}
+
 async function main(): Promise<void> {
   const { MST_RPC_URL, DEPLOYER_PRIVATE_KEY } = process.env;
   if (!MST_RPC_URL || !DEPLOYER_PRIVATE_KEY) {
@@ -59,10 +97,14 @@ async function main(): Promise<void> {
     txHashes.push(receipt.txHash);
     console.log(`    tx: ${receipt.txHash}  ${explorerTxLink(receipt.txHash)}`);
 
-    const found = await hallmarq.verify(uniqueContent);
+    const found = await withReadRetry(
+      "verify",
+      () => hallmarq.verify(uniqueContent),
+      (result) => result.status === "found",
+    );
     const sendToConfirmedReadMs = Date.now() - sendStart;
     if (found.status !== "found") {
-      throw new Error(`Expected "found", got "${found.status}"`);
+      throw new Error(`Expected "found", got "${found.status}" after retries`);
     }
     console.log(`    verify: found (send -> confirmed read: ${sendToConfirmedReadMs}ms)`);
 
@@ -86,26 +128,52 @@ async function main(): Promise<void> {
     const batchPromises = batchItems.map((item) =>
       hallmarq.stampBatched(item.content, { model: item.model }),
     );
+    // Attach handlers before flush(): flush() is what makes these promises
+    // settle, so creating the Promise.allSettled after it would leave a
+    // window where a rejection has no handler attached yet and surfaces as
+    // an unhandled promise rejection instead of a reported failure below.
+    const batchSettled = Promise.allSettled(batchPromises);
     await hallmarq.flush();
-    const batchReceipts = await Promise.all(batchPromises);
+    const batchResults = await batchSettled;
 
     mkdirSync(RECEIPT_DIR, { recursive: true });
 
-    for (const [index, batchReceipt] of batchReceipts.entries()) {
+    let anyBatchItemFailed = false;
+    for (const [index, result] of batchResults.entries()) {
+      const item = batchItems[index];
+      if (result.status === "rejected") {
+        anyBatchItemFailed = true;
+        console.log(`    item ${index} (${item.model}): send failed: ${String(result.reason)}`);
+        continue;
+      }
+
+      const batchReceipt = result.value;
       txHashes.push(batchReceipt.txHash);
       const receiptPath = path.join(RECEIPT_DIR, `item-${index}.json`);
       writeFileSync(receiptPath, `${JSON.stringify(batchReceipt.receiptFile, null, 2)}\n`);
 
-      const item = batchItems[index];
-      const verifyResult = await hallmarq.verifyReceipt(item.content, batchReceipt.receiptFile);
-      if (verifyResult.status !== "found-in-batch") {
-        throw new Error(
-          `Expected "found-in-batch" for item ${index}, got "${verifyResult.status}"`,
+      try {
+        const verifyResult = await withReadRetry(
+          `item ${index} verify`,
+          () => hallmarq.verifyReceipt(item.content, batchReceipt.receiptFile),
+          (r) => r.status === "found-in-batch",
+        );
+        if (verifyResult.status !== "found-in-batch") {
+          anyBatchItemFailed = true;
+          console.log(
+            `    item ${index} (${item.model}): expected "found-in-batch", got "${verifyResult.status}" after retries, tx ${batchReceipt.txHash}  ${explorerTxLink(batchReceipt.txHash)}`,
+          );
+          continue;
+        }
+        console.log(
+          `    item ${index} (${item.model}): found-in-batch, tx ${batchReceipt.txHash}  ${explorerTxLink(batchReceipt.txHash)}`,
+        );
+      } catch (error) {
+        anyBatchItemFailed = true;
+        console.log(
+          `    item ${index} (${item.model}): verify failed: ${String(error)}, tx ${batchReceipt.txHash}  ${explorerTxLink(batchReceipt.txHash)}`,
         );
       }
-      console.log(
-        `    item ${index} (${item.model}): found-in-batch, tx ${batchReceipt.txHash}  ${explorerTxLink(batchReceipt.txHash)}`,
-      );
     }
 
     // (d) print every transaction with its explorer link.
@@ -114,6 +182,11 @@ async function main(): Promise<void> {
       console.log(`  ${txHash}  ${explorerTxLink(txHash)}`);
     }
     console.log(`\nSend -> confirmed read time (N4): ${sendToConfirmedReadMs}ms`);
+
+    if (anyBatchItemFailed) {
+      process.exitCode = 1;
+      console.error("\nSmoke test FAILED: one or more batch items did not stamp and verify.");
+    }
   } finally {
     await hallmarq.close();
   }
