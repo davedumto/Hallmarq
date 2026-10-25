@@ -129,5 +129,19 @@
       "contentHash": "0x03783fac2efed8fbc9ad443e592ee30e61d65f471140c10ca155e937b435b760",
       "root": "0x55f349f6522044c9a77cb1f0c1e5c163b7905fa659abb4fed210ac8edefd6eb5"
     }
+  },
+  "meta": {
+    "$comment": "canonicalJsonStringify's test vector (@hallmarq/sdk): recursively sorted object keys, array order preserved, no whitespace; metaHash = hashBytes(utf8(canonical)).",
+    "value": {
+      "model": "gpt-4o",
+      "temperature": 0.7,
+      "tags": ["draft", "support"],
+      "system": {
+        "verified": true,
+        "reviewer": null
+      }
+    },
+    "canonical": "{\"model\":\"gpt-4o\",\"system\":{\"reviewer\":null,\"verified\":true},\"tags\":[\"draft\",\"support\"],\"temperature\":0.7}",
+    "metaHash": "0xc3d74951970eba0f367051b61868f31f19477d992551a9e5bfbcc3640ddfb0e9"
   }
 }

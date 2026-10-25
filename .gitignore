@@ -8,6 +8,7 @@ coverage/
 artifacts/
 cache/
 typechain-types/
+types/
 
 # env
 .env

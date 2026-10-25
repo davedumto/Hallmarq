@@ -8,6 +8,7 @@ describe("networks", () => {
     expect(hardhat.rpcUrl).toBe("http://127.0.0.1:8545");
     expect(hardhat.explorerUrl).toBeUndefined();
     expect(hardhat.registryAddress).toBeUndefined();
+    expect(hardhat.deploymentBlock).toBeUndefined();
   });
 
   it("mstTestnet has every value left undefined until the founder confirms them", () => {
@@ -15,5 +16,6 @@ describe("networks", () => {
     expect(mstTestnet.rpcUrl).toBeUndefined();
     expect(mstTestnet.explorerUrl).toBeUndefined();
     expect(mstTestnet.registryAddress).toBeUndefined();
+    expect(mstTestnet.deploymentBlock).toBeUndefined();
   });
 });
