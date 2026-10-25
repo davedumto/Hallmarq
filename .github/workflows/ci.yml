@@ -89,6 +89,6 @@ jobs:
         with:
           target: "."
           node-version: "22"
-          solc-version: "0.8.26"
+          solc-version: "0.8.28"
           slither-version: "0.11.6"
           fail-on: medium

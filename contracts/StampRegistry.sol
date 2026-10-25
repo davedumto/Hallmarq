@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 // NatSpec is intentionally limited to @notice/@param/@return/@dev (task scope); @title/@author are omitted.
 // solhint-disable use-natspec

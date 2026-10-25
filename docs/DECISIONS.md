@@ -49,10 +49,13 @@ document. The contract stays as specified: it only rejects the zero hash.
 
 ## D5. Compiler and EVM target
 
-`solc 0.8.26`, optimizer at 200 runs, **`evmVersion: "paris"`**. MST supports up
+`solc 0.8.28`, optimizer at 200 runs, **`evmVersion: "paris"`**. MST supports up
 to Cancun (D13); we deliberately stay on paris for v1 because every test, gas
 figure and the 3,030-byte size were measured on paris; moving to
 shanghai/cancun is optional future work.
+
+Originally `0.8.26`; switched to `0.8.28` to make the deployed contract
+source-verifiable on MST's Blockscout explorer — see D14 for why.
 
 ## D6. Hardhat 3 + ethers v6 + mocha; fast-check for property tests
 
@@ -156,13 +159,60 @@ exactly as given here; none of it is guessed or re-derived.
   **not** supported. This is strictly ahead of D5's `paris` target, so paris
   stays correct; see D5 for why we don't move up yet.
 - **Explorer**: Blockscout v9.0.2. Source verification is enabled; solc
-  `v0.8.26+commit.8a97fa7a` is available and standard-input (JSON) upload
-  verification is supported. The verification API is Etherscan-compatible,
-  at `https://testnet.mstscan.com/api`. Checked by reading the explorer's own
-  version/about page and its API docs.
+  `v0.8.26+commit.8a97fa7a` is listed as available and standard-input (JSON)
+  upload verification is supported. **Correction (D14): listed does not mean
+  working.** 0.8.26 (and 0.8.25) verify 0 of 713 contracts on this explorer in
+  practice; neighbouring versions verify routinely. Use solc 0.8.28 (D5), not
+  0.8.26, for anything that needs to verify here. The verification API is
+  Etherscan-compatible, at `https://testnet.mstscan.com/api`. Checked by
+  reading the explorer's own version/about page and its API docs.
 - **`eth_getLogs`** works over the full chain range (no block-range cap was
   hit querying from genesis). Checked by querying the full range directly.
 - **Deployer wallet**: `0xE5439B81cab5813226AD3be0EA5de2aceFB3f750`, funded
   with 50 tMSTC from the faucet. This is the "fresh deployer wallet" open
   item from `docs/ROADMAP.md`; its key lives only in the `testnet` GitHub
   environment's `DEPLOYER_PRIVATE_KEY` secret, never in this repository.
+
+## D14. Compiler switch for explorer verification
+
+D13 listed solc `v0.8.26+commit.8a97fa7a` as available on MST's Blockscout
+explorer. Available isn't the same as working: the CTO checked MST's
+verification statistics and found 0.8.26 and 0.8.25 verify **0 of 713**
+contracts ever verified on this explorer, while neighbouring versions verify
+routinely (0.8.24: 180, 0.8.27: 47, 0.8.28: 155, 0.8.29: 186). The explorer's
+verifier has a specific, undiagnosed problem with exactly these two
+versions, not with this contract: our 0.8.26 testnet deployment at
+`0x97d24c9728475C9612864593173035a7663bb948` (block 6547527) has bytecode
+byte-for-byte identical to the committed source (confirmed independently
+twice, in this PR and in PR #10), and submitting the exact build-info
+standard input *and* a flattened single-file variant both got "verification
+started" from Blockscout's v2 API and then never completed — pointing at
+MST's verifier service, not at our input or our bytecode.
+
+**Fix: compiler version only.** Switched `solc` from `0.8.26` to `0.8.28`
+(D5) everywhere it's pinned — `contracts/StampRegistry.sol`'s pragma,
+`hardhat.config.ts`'s `SOLIDITY_VERSION`, `.solhint.json`'s
+`compiler-version` rule, and the `slither` CI job's `solc-version` input.
+Nothing else about the contract, the optimizer settings or `evmVersion`
+changes. Confirmed `v0.8.28+commit.7893614a` is offered by MST's explorer via
+`GET /api/v2/smart-contracts/verification/config` before switching.
+
+**Why 0.8.28 and not some other neighbour.** It has the most verified
+contracts of the versions the CTO checked (186 for 0.8.29 is higher, but
+0.8.29 wasn't confirmed available in MST's own `verification/config` list at
+the time of checking) and no functionality in `StampRegistry.sol` depends on
+anything 0.8.28 changes relative to 0.8.26 — confirmed directly: the compiled
+`deployedBytecode` is byte-for-byte identical between the two compiler
+versions except for the trailing CBOR metadata (the embedded IPFS hash and
+solc-version marker, which *must* differ since they encode the compiler
+itself). Same bytecode body means same gas costs and the same 3,030-byte
+size; see the PR description for the side-by-side numbers.
+
+**The 0.8.26 testnet deployment is abandoned.** The contract at
+`0x97d24c9728475C9612864593173035a7663bb948` (block 6547527) stays on-chain
+— nothing deletes or migrates it, and nothing in this codebase points at it
+after this PR — but it is unused going forward. No data depends on it: its
+`smoke.ts` stamps are throwaway test content, never referenced by anything
+else. The next `deploy` run (Roadmap item 5b) produces a fresh 0.8.28
+deployment at a new address; `deployments/mstTestnet.json` isn't committed,
+so that deploy needs no `--force`.

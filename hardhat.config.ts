@@ -3,9 +3,10 @@ import "dotenv/config";
 import hardhatToolboxMochaEthersPlugin from "@nomicfoundation/hardhat-toolbox-mocha-ethers";
 import type { HardhatUserConfig } from "hardhat/config";
 
-// MST supports up to Cancun, but v1 stays on "paris": every test, gas figure
-// and the 3,030-byte contract size were measured on paris (docs/DECISIONS.md D5).
-const SOLIDITY_VERSION = "0.8.26";
+// MST supports up to Cancun, but v1 stays on "paris" (docs/DECISIONS.md D5).
+// solc 0.8.28, not 0.8.26: MST's Blockscout verifier has never verified an
+// 0.8.25/0.8.26 contract (docs/DECISIONS.md D14).
+const SOLIDITY_VERSION = "0.8.28";
 
 // MST testnet's chain ID (docs/DECISIONS.md D13), used as the chainDescriptors
 // key below. Not read from MST_CHAIN_ID: chainDescriptors must exist even when

@@ -20,7 +20,7 @@ Front-running is accepted for v1.
 
 ## Slither
 
-Run as the `slither` CI job (`.github/workflows/ci.yml`), `solc 0.8.26`, EVM
+Run as the `slither` CI job (`.github/workflows/ci.yml`), `solc 0.8.28`, EVM
 target `paris`, `slither-analyzer` pinned to `0.11.6` (via
 `crytic/slither-action@v0.4.2`). The job fails on any finding of medium
 severity or above.
