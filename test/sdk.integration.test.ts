@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 
 import { buildTree, getProof, hashText } from "@hallmarq/core";
 import { AlreadyStamped, Hallmarq } from "@hallmarq/sdk";
-import type { Receipt, VerifyResult } from "@hallmarq/sdk";
+import type { BatchReceipt, Receipt, VerifyResult } from "@hallmarq/sdk";
 import { expect } from "chai";
 import { Wallet, type Signer } from "ethers";
 import { network } from "hardhat";
@@ -96,6 +96,7 @@ function makeHallmarq(options: {
   signer?: Signer;
   confirmations?: number;
   confirmTimeoutMs?: number;
+  batch?: { maxItems?: number; maxWaitMs?: number };
 }): Hallmarq {
   return new Hallmarq({
     // Unused when `signer` has its own provider (every write-path test
@@ -111,6 +112,7 @@ function makeHallmarq(options: {
     // itself. The dedicated "2 confirmations" test overrides this.
     confirmations: options.confirmations ?? 1,
     confirmTimeoutMs: options.confirmTimeoutMs,
+    batch: options.batch,
   });
 }
 
@@ -328,5 +330,235 @@ describe("SDK integration (Hallmarq against a real deployed StampRegistry)", () 
     } finally {
       await ethers.provider.send("evm_setAutomine", [true]);
     }
+  });
+
+  it("a batch of 5 (one duplicate) sends exactly one transaction; every receipt verifies via verifyInBatch and verifyReceipt", async () => {
+    const { registryAddress, chainId, deploymentBlock, alice } = await deploy();
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer: alice });
+
+    const contents = [
+      "integration: batch item A",
+      "integration: batch item B",
+      "integration: batch item A", // duplicate of the first, at a different position
+      "integration: batch item D",
+      "integration: batch item E",
+    ];
+
+    const pending = contents.map((content) => hallmarq.stampBatched(content, { model: "gpt-4o" }));
+    await hallmarq.flush();
+    const receipts: BatchReceipt[] = await Promise.all(pending);
+
+    // Every item's receipt shares the same txHash: proof that all 5 went
+    // out in a single stampRoot transaction, not 5 separate ones.
+    const uniqueTxHashes = new Set(receipts.map((r) => r.txHash));
+    expect(uniqueTxHashes.size).to.equal(1);
+    expect(receipts.every((r) => r.batchSize === 5)).to.equal(true);
+    expect(receipts.map((r) => r.index)).to.deep.equal([0, 1, 2, 3, 4]);
+    // The duplicate (index 0 and 2) gets two different, independently
+    // correct proofs, since each is a distinct position in the tree.
+    expect(receipts[0].proof).to.not.deep.equal(receipts[2].proof);
+
+    for (let i = 0; i < contents.length; i++) {
+      const receipt = receipts[i];
+
+      const viaVerifyInBatch = await hallmarq.verifyInBatch(contents[i], {
+        root: receipt.root,
+        proof: receipt.proof,
+      });
+      expect(viaVerifyInBatch.status).to.equal("found-in-batch");
+      if (viaVerifyInBatch.status !== "found-in-batch") throw new Error("unreachable");
+      expect(viaVerifyInBatch.root).to.equal(receipt.root);
+
+      const viaVerifyReceipt = await hallmarq.verifyReceipt(contents[i], receipt.receiptFile);
+      expect(viaVerifyReceipt.status).to.equal("found-in-batch");
+    }
+  });
+
+  it("verifyReceipt throws ConfigError when the receipt's chainId doesn't match this instance's configured chainId", async () => {
+    const { registryAddress, chainId, deploymentBlock, alice } = await deploy();
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer: alice });
+
+    const content = "integration: receipt with the wrong chainId";
+    const pending = hallmarq.stampBatched(content, { model: "gpt-4o" });
+    await hallmarq.flush();
+    const receipt = await pending;
+
+    let error: unknown;
+    try {
+      await hallmarq.verifyReceipt(content, { ...receipt.receiptFile, chainId: chainId + 1 });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).to.be.instanceOf(Error);
+    expect((error as Error).name).to.equal("ConfigError");
+  });
+
+  it("verifyReceipt throws ConfigError when the receipt's registryAddress doesn't match this instance's", async () => {
+    const { registryAddress, chainId, deploymentBlock, alice } = await deploy();
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer: alice });
+
+    const content = "integration: receipt with the wrong registryAddress";
+    const pending = hallmarq.stampBatched(content, { model: "gpt-4o" });
+    await hallmarq.flush();
+    const receipt = await pending;
+
+    const otherAddress = "0x" + "99".repeat(20);
+    let error: unknown;
+    try {
+      await hallmarq.verifyReceipt(content, {
+        ...receipt.receiptFile,
+        registryAddress: otherAddress,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).to.be.instanceOf(Error);
+    expect((error as Error).name).to.equal("ConfigError");
+  });
+
+  it("measures gas: one stampRoot(5) vs 5 individual stamp() calls, for the PR's cost comparison", async () => {
+    // registry is deployed by (and so already sends as) the default
+    // signer, the same account as alice; connect()ing it to alice again
+    // would only widen its type back down to the untyped BaseContract.
+    const { registry } = await deploy();
+
+    let singleStampGasTotal = 0n;
+    for (let i = 0; i < 5; i++) {
+      const contentHash = hashText(`integration: gas measurement single stamp ${i}`);
+      const tx = await registry.stamp(contentHash, "gpt-4o", ethers.ZeroHash);
+      const txReceipt = await tx.wait();
+      singleStampGasTotal += txReceipt!.gasUsed;
+    }
+
+    const hashes = Array.from({ length: 5 }, (_, i) =>
+      hashText(`integration: gas measurement batch item ${i}`),
+    );
+    const tree = buildTree(hashes);
+    const batchTx = await registry.stampRoot(tree.root, 5, "gpt-4o");
+    const batchTxReceipt = await batchTx.wait();
+    const batchGas = batchTxReceipt!.gasUsed;
+
+    console.log(
+      `\n    gas: 5x stamp()     = ${singleStampGasTotal} total, ${singleStampGasTotal / 5n} avg/item` +
+        `\n    gas: 1x stampRoot(5) = ${batchGas} total, ${batchGas / 5n} avg/item\n`,
+    );
+
+    expect(batchGas).to.be.lessThan(singleStampGasTotal);
+  });
+
+  // These four tests all need a signer that can actually `signTransaction`
+  // — Hardhat's own test signers (HardhatEthersSigner, the `alice`/`bob`
+  // every other test in this file uses) can't, and silently take the
+  // fallback `eth_sendTransaction` send path instead, where Hardhat itself
+  // assigns the nonce and the race these tests exist to catch can't
+  // happen. A real `ethers.Wallet` signs locally and goes through the real
+  // populate/sign/broadcast path the send lock protects. The key is
+  // Hardhat's well-known default account #0 — a public test fixture, not
+  // a secret, the same one the two-signer race test above uses for alice.
+  function lockTestSigner() {
+    return new Wallet(
+      "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+      ethers.provider,
+    );
+  }
+
+  it("flush() sends concurrent stampRoot transactions for 3 models from one signer with consecutive nonces, not a nonce collision", async () => {
+    const { registryAddress, chainId, deploymentBlock } = await deploy();
+    const signer = lockTestSigner();
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer });
+
+    const pending = [
+      hallmarq.stampBatched("integration: lock test model-a item", { model: "model-a" }),
+      hallmarq.stampBatched("integration: lock test model-b item", { model: "model-b" }),
+      hallmarq.stampBatched("integration: lock test model-c item", { model: "model-c" }),
+    ];
+    await hallmarq.flush();
+    const receipts = await Promise.all(pending);
+
+    expect(receipts).to.have.lengthOf(3);
+    const nonces = await Promise.all(
+      receipts.map(async (r) => (await ethers.provider.getTransaction(r.txHash))!.nonce),
+    );
+    const sorted = [...nonces].sort((a, b) => a - b);
+    expect(sorted).to.deep.equal([sorted[0], sorted[0] + 1, sorted[0] + 2]);
+    expect(new Set(nonces).size).to.equal(3);
+  });
+
+  it("two concurrent stamp() calls from the same signer both succeed, with consecutive nonces", async () => {
+    const { registryAddress, chainId, deploymentBlock } = await deploy();
+    const signer = lockTestSigner();
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer });
+
+    const [a, b] = await Promise.all([
+      hallmarq.stamp("integration: lock test concurrent stamp A", { model: "gpt-4o" }),
+      hallmarq.stamp("integration: lock test concurrent stamp B", { model: "gpt-4o" }),
+    ]);
+
+    const [nonceA, nonceB] = await Promise.all([
+      ethers.provider.getTransaction(a.txHash).then((tx) => tx!.nonce),
+      ethers.provider.getTransaction(b.txHash).then((tx) => tx!.nonce),
+    ]);
+    expect(Math.abs(nonceA - nonceB)).to.equal(1);
+  });
+
+  it("a size-triggered batch firing while another is already in flight: both succeed, with consecutive nonces", async () => {
+    const { registryAddress, chainId, deploymentBlock } = await deploy();
+    const signer = lockTestSigner();
+    const hallmarq = makeHallmarq({
+      registryAddress,
+      chainId,
+      deploymentBlock,
+      signer,
+      batch: { maxItems: 1, maxWaitMs: 30_000 },
+    });
+
+    // maxItems: 1 means each call below triggers its own batch send
+    // immediately — the second fires while the first is still (at least
+    // momentarily) in flight.
+    const first = hallmarq.stampBatched("integration: lock test size-triggered A", {
+      model: "gpt-4o",
+    });
+    const second = hallmarq.stampBatched("integration: lock test size-triggered B", {
+      model: "gpt-4o",
+    });
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.batchSize).to.equal(1);
+    expect(b.batchSize).to.equal(1);
+    const [nonceA, nonceB] = await Promise.all([
+      ethers.provider.getTransaction(a.txHash).then((tx) => tx!.nonce),
+      ethers.provider.getTransaction(b.txHash).then((tx) => tx!.nonce),
+    ]);
+    expect(Math.abs(nonceA - nonceB)).to.equal(1);
+  });
+
+  it("releases the send lock when a transaction fails, so a later call from the same signer isn't stuck", async () => {
+    const { registryAddress, chainId, deploymentBlock } = await deploy();
+    const signer = lockTestSigner();
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer });
+    const content = "integration: lock test duplicate content from one signer";
+
+    // Both calls target the same content. Automine stays on: the first
+    // call's populate/sign/broadcast (and, with automine, its mining) runs
+    // to completion under the send lock before the second call's populate
+    // step starts. By then the content is already stamped, so the
+    // second's own gas estimation (inside `signer.populateTransaction`)
+    // simulates against that state and fails before it ever signs or
+    // broadcasts anything — a failure inside the locked section, same as
+    // the "Must fix" review comment's concern, just surfacing at
+    // estimation rather than at the broadcast call itself.
+    const firstPromise = hallmarq.stamp(content, { model: "gpt-4o" });
+    const secondPromise = hallmarq.stamp(content, { model: "gpt-4o" }).catch((e: unknown) => e);
+
+    const [firstReceipt, secondError] = await Promise.all([firstPromise, secondPromise]);
+    expect(firstReceipt.txHash).to.be.a("string");
+    expect(secondError).to.be.instanceOf(Error);
+
+    // The lock must have been released despite the second call's failure:
+    // a third, unrelated call from the same signer still succeeds.
+    const third = await hallmarq.stamp("integration: lock test after failure", {
+      model: "gpt-4o",
+    });
+    expect(third.txHash).to.be.a("string");
   });
 });

@@ -103,3 +103,37 @@ additions, both backward-compatible (no existing field or method changed):
   `Stamped`/`BatchStamped` events from this block instead of block 0, which
   public RPCs often reject for unbounded ranges. `undefined` until Roadmap
   PR 5's deployment fills it in, same as `registryAddress`.
+
+## D12. The receipt file format lives in `@hallmarq/core`, not the SDK (PR 7)
+
+A batched item's `proof` only exists off-chain — the contract stores just the
+root — so a caller must keep it to ever verify that item again. `ReceiptFile`
+(`{ version: 1, chainId, registryAddress, contentHash, root, proof, model,
+txHash, blockNumber }`) is the serializable record of everything
+`verifyInBatch` needs for one item, plus enough context (`chainId`,
+`registryAddress`) to catch a receipt being checked against the wrong
+network or registry. `parseReceiptFile`/`serializeReceiptFile` live in
+`@hallmarq/core`, alongside `verifyProof`, rather than in `packages/sdk`,
+because the verifier page (roadmap item 8) reads a visitor-supplied receipt
+file directly and must not have to depend on the SDK (or ethers) just to
+parse one. Three small additions beyond the spec's `ReceiptFile` sketch, all
+backward-compatible:
+
+- **Strict parsing.** `parseReceiptFile` rejects anything that isn't exactly
+  this shape — wrong `version`, a malformed hash or address, a non-integer
+  `chainId`/`blockNumber`, or an unknown extra field — throwing the new
+  `InvalidReceipt` error (a `HallmarqError` subclass) naming the bad field,
+  rather than silently accepting a near-miss that would only fail later, and
+  more confusingly, inside `verifyInBatch`.
+- **`Hallmarq.verifyReceipt(content, receiptFile)`.** A convenience built on
+  `parseReceiptFile` + `verifyInBatch` that also checks the receipt's
+  `chainId`/`registryAddress` against the instance's own configuration
+  first, throwing `ConfigError` on a mismatch — so a receipt saved against
+  one deployment is never silently checked against a different one it
+  happens to share a hash format with.
+- **`Hallmarq.close()` and the `Closed` error.** `stampBatched`'s open
+  batches hold timers and pending promises; `close()` flushes every open
+  batch and then refuses new ones (`Closed`, a `HallmarqError` subclass),
+  so a caller shutting down (a server process exiting, a test suite
+  finishing) has one call that guarantees no batch is left stranded and no
+  timer keeps the process alive.

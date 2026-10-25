@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { assertHash32, concatBytes, fromHex, toHex } from "./bytes.js";
+import { assertAddress, assertHash32, concatBytes, fromHex, toHex } from "./bytes.js";
 import { InvalidHex } from "./errors.js";
 
 describe("toHex / fromHex", () => {
@@ -62,6 +62,35 @@ describe("assertHash32", () => {
   it("throws InvalidHex for malformed hex, not just the wrong length", () => {
     expect(() => assertHash32("0x" + "zz".repeat(32))).toThrow(InvalidHex);
     expect(() => assertHash32("not-hex-at-all")).toThrow(InvalidHex);
+  });
+});
+
+describe("assertAddress", () => {
+  const validAddress = "0x" + "ab".repeat(20);
+
+  it("returns a well-formed 20-byte address unchanged", () => {
+    expect(assertAddress(validAddress)).toBe(validAddress);
+  });
+
+  it("accepts uppercase hex digits", () => {
+    const upper = "0x" + "AB".repeat(20);
+    expect(assertAddress(upper)).toBe(upper);
+  });
+
+  it("throws InvalidHex for an address shorter than 20 bytes", () => {
+    expect(() => assertAddress("0x1234")).toThrow(InvalidHex);
+  });
+
+  it("throws InvalidHex for an address longer than 20 bytes (e.g. a 32-byte hash)", () => {
+    expect(() => assertAddress("0x" + "ab".repeat(32))).toThrow(InvalidHex);
+  });
+
+  it("throws InvalidHex for a missing 0x prefix", () => {
+    expect(() => assertAddress("ab".repeat(20))).toThrow(InvalidHex);
+  });
+
+  it("throws InvalidHex for a non-hex character", () => {
+    expect(() => assertAddress("0x" + "zz".repeat(20))).toThrow(InvalidHex);
   });
 });
 
