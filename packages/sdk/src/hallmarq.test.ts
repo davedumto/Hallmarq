@@ -615,6 +615,94 @@ describe("Hallmarq.stamp", () => {
   });
 });
 
+describe("Hallmarq send lock (concurrent sends on one instance never race for a nonce)", () => {
+  function makeHallmarq(signer: unknown) {
+    return new Hallmarq({
+      rpcUrl: RPC_URL,
+      registryAddress: REGISTRY_ADDRESS,
+      chainId: CHAIN_ID,
+      signer: signer as never,
+    });
+  }
+
+  function successfulTx(hash: string, blockNumber: number) {
+    return { hash, wait: vi.fn().mockResolvedValue({ blockNumber }) };
+  }
+
+  it("serializes populate/sign/broadcast across two concurrent stamp() calls: the second never starts until the first's broadcast has returned", async () => {
+    const provider = makeFakeProvider();
+    const signer = makeFakeSigner(provider);
+    const order: string[] = [];
+
+    (signer as unknown as { populateTransaction: Mock }).populateTransaction.mockImplementation(
+      (tx: unknown) => {
+        order.push("populate");
+        return Promise.resolve(tx);
+      },
+    );
+    (signer as unknown as { signTransaction: Mock }).signTransaction.mockImplementation(() => {
+      order.push("sign");
+      return Promise.resolve(RAW_SIGNED_TX);
+    });
+
+    let resolveFirstBroadcast!: (tx: { hash: string; wait: Mock }) => void;
+    provider.broadcastTransaction
+      .mockImplementationOnce(() => {
+        order.push("broadcast-1-start");
+        return new Promise((resolve) => {
+          resolveFirstBroadcast = resolve;
+        });
+      })
+      .mockImplementationOnce(() => {
+        order.push("broadcast-2-start");
+        return Promise.resolve(successfulTx("0xtx2", 1));
+      });
+
+    const hallmarq = makeHallmarq(signer);
+
+    const first = hallmarq.stamp("one", { model: "gpt-4o" });
+    const second = hallmarq.stamp("two", { model: "gpt-4o" });
+
+    await vi.waitFor(() => {
+      if (order.length < 3) throw new Error("first call hasn't reached broadcast yet");
+    });
+    // The first call's populate/sign/broadcast ran, but its broadcast is
+    // still pending (the lock is held): the second call must not have
+    // started its own populate/sign yet, or they'd both have read the same
+    // "pending" nonce.
+    expect(order).toEqual(["populate", "sign", "broadcast-1-start"]);
+
+    resolveFirstBroadcast(successfulTx("0xtx1", 1));
+    await first;
+    await second;
+
+    expect(order).toEqual([
+      "populate",
+      "sign",
+      "broadcast-1-start",
+      "populate",
+      "sign",
+      "broadcast-2-start",
+    ]);
+  });
+
+  it("releases the lock when a broadcast fails, so a later call isn't deadlocked by an earlier failure", async () => {
+    const provider = makeFakeProvider();
+    const signer = makeFakeSigner(provider);
+    provider.broadcastTransaction
+      .mockRejectedValueOnce(callException({ name: "ModelTooLong", args: [] }))
+      .mockResolvedValueOnce(successfulTx("0xtx2", 1));
+    const hallmarq = makeHallmarq(signer);
+
+    const first = hallmarq.stamp("one", { model: "gpt-4o" }).catch((e: unknown) => e);
+    const second = hallmarq.stamp("two", { model: "gpt-4o" });
+
+    const [firstError, secondReceipt] = await Promise.all([first, second]);
+    expect(firstError).toBeInstanceOf(ModelTooLong);
+    expect(secondReceipt.txHash).toBe("0xtx2");
+  });
+});
+
 describe("Hallmarq.verify", () => {
   function makeHallmarq(options: { chainId?: number } = {}) {
     return new Hallmarq({
@@ -1059,6 +1147,45 @@ describe("Hallmarq.stampBatched / flush / close", () => {
 
     const error = await pending;
     expect(error).toBeInstanceOf(NetworkError);
+  });
+
+  it("flush() waits for a batch that already started sending on its own timer, not just the ones it triggers itself", async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = makeFakeProvider();
+      let resolveWait!: (receipt: { blockNumber: number }) => void;
+      const hangingTx = {
+        hash: "0xtx",
+        wait: vi.fn(() => new Promise((resolve) => (resolveWait = resolve))),
+      };
+      provider.broadcastTransaction.mockResolvedValue(hangingTx);
+      const signer = makeFakeSigner(provider);
+      const hallmarq = makeHallmarq(signer, { maxItems: 256, maxWaitMs: 1000 });
+
+      const pending = hallmarq.stampBatched("one", { model: "gpt-4o" });
+      // Fires the batch's own maxWaitMs timer: #sendBatch starts, signs,
+      // broadcasts, and is now waiting on a confirmation that never comes
+      // until resolveWait() is called below. The batch has already left
+      // #openBatches by this point.
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const flushDone = hallmarq.flush();
+      let flushSettled = false;
+      void flushDone.then(() => (flushSettled = true));
+
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(flushSettled).toBe(false);
+
+      resolveWait({ blockNumber: 1 });
+      await flushDone;
+      expect(flushSettled).toBe(true);
+
+      const receipt = await pending;
+      expect(receipt.batchSize).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("gives separate models separate batches, even queued back to back", async () => {

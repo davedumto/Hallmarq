@@ -187,6 +187,19 @@ export class Hallmarq {
   #contractExistenceChecked = false;
   readonly #openBatches = new Map<string, OpenBatch>();
   #closed = false;
+  /**
+   * An async mutex (a plain promise chain) serializing every
+   * populate/sign/broadcast section across this instance. See
+   * {@link Hallmarq.#withSendLock}.
+   */
+  #sendLock: Promise<void> = Promise.resolve();
+  /**
+   * Every `#sendBatch` call currently in flight, so `flush`/`close` can
+   * wait for batches that already left `#openBatches` (sent by their own
+   * timer or by reaching `maxItems`) and not just the ones they're about
+   * to send themselves.
+   */
+  readonly #inFlightSends = new Set<Promise<void>>();
 
   constructor(options: HallmarqOptions = {}) {
     const rpcUrl = options.rpcUrl ?? mstTestnet.rpcUrl;
@@ -285,6 +298,35 @@ export class Hallmarq {
   }
 
   /**
+   * A minimal async mutex: queues `fn` behind every call already queued on
+   * this instance, via a plain promise chain (no dependency needed).
+   * `populateTransaction` resolves the signer's `"pending"` nonce, so two
+   * concurrent `#signAndBroadcast` calls racing through populate-then-sign
+   * would both read the *same* nonce and each sign a transaction that
+   * can't both land — one would always come back a `NetworkError`. This is
+   * invisible against a signer whose nonce is assigned server-side (a
+   * JSON-RPC wallet, or Hardhat's own test signers going through the
+   * `eth_sendTransaction` fallback) but hits immediately with a plain
+   * `ethers.Wallet`, the common case for a backend. Serializing only this
+   * section (never confirmation waiting, which runs after `fn` resolves
+   * and releases the lock) keeps batches confirming in parallel while
+   * still ruling out the nonce race.
+   */
+  async #withSendLock<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = this.#sendLock;
+    let release!: () => void;
+    this.#sendLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  /**
    * Signs `populateTx`'s transaction exactly once so that a retry — needed
    * only when the broadcast's response is lost, not when it fails outright
    * — can never end up as a second, independently-signed transaction. The
@@ -303,46 +345,52 @@ export class Hallmarq {
    * wallet rejection in particular) is rethrown as-is, or the caller would
    * get prompted to sign twice for one call. See the README's "Retries"
    * section.
+   *
+   * The whole populate/sign/broadcast (or fallback-send) section runs
+   * under {@link Hallmarq.#withSendLock}, so two calls on this instance
+   * never race for the same nonce; see that method's doc for why.
    */
   async #signAndBroadcast(
     populateTx: () => Promise<ContractTransaction>,
     fallbackSend: () => Promise<TransactionResponse>,
   ): Promise<TransactionResponse> {
-    const signer = this.#signer!;
+    return this.#withSendLock(async () => {
+      const signer = this.#signer!;
 
-    const populatedCall = await populateTx();
-    const populated = await signer.populateTransaction(populatedCall);
+      const populatedCall = await populateTx();
+      const populated = await signer.populateTransaction(populatedCall);
 
-    let raw: string;
-    try {
-      raw = await signer.signTransaction(populated);
-    } catch (error) {
-      if (isUnsupportedSigning(error)) {
-        return await fallbackSend();
-      }
-      throw error;
-    }
-
-    const txHash = keccak256(raw);
-    try {
-      return await withRetry(() => this.#provider.broadcastTransaction(raw));
-    } catch (error) {
-      if (isAlreadyBroadcastError(error)) {
-        const existing = await this.#provider.getTransaction(txHash);
-        if (existing) {
-          return existing;
+      let raw: string;
+      try {
+        raw = await signer.signTransaction(populated);
+      } catch (error) {
+        if (isUnsupportedSigning(error)) {
+          return await fallbackSend();
         }
+        throw error;
       }
-      if (isRetryableError(error)) {
-        // Every attempt failed as a transport error, so the broadcast's
-        // outcome is unknown: the signed transaction may have reached the
-        // node despite the lost response, and could still be in flight.
-        // The caller gets the hash to look up, never a reason to sign and
-        // send a second, independent transaction for the same content.
-        throw new NotConfirmed(txHash);
+
+      const txHash = keccak256(raw);
+      try {
+        return await withRetry(() => this.#provider.broadcastTransaction(raw));
+      } catch (error) {
+        if (isAlreadyBroadcastError(error)) {
+          const existing = await this.#provider.getTransaction(txHash);
+          if (existing) {
+            return existing;
+          }
+        }
+        if (isRetryableError(error)) {
+          // Every attempt failed as a transport error, so the broadcast's
+          // outcome is unknown: the signed transaction may have reached the
+          // node despite the lost response, and could still be in flight.
+          // The caller gets the hash to look up, never a reason to sign and
+          // send a second, independent transaction for the same content.
+          throw new NotConfirmed(txHash);
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
   }
 
   async #sendStampTransaction(
@@ -677,7 +725,7 @@ export class Hallmarq {
         const newBatch: OpenBatch = { model, items: [], timer: undefined };
         newBatch.timer = setTimeout(() => {
           this.#openBatches.delete(model);
-          void this.#sendBatch(newBatch);
+          void this.#trackSend(newBatch);
         }, this.#batchMaxWaitMs);
         newBatch.timer.unref?.();
         this.#openBatches.set(model, newBatch);
@@ -691,7 +739,7 @@ export class Hallmarq {
         if (batch.timer) {
           clearTimeout(batch.timer);
         }
-        void this.#sendBatch(batch);
+        void this.#trackSend(batch);
       }
     });
   }
@@ -787,17 +835,44 @@ export class Hallmarq {
   }
 
   /**
+   * Starts sending `batch` and tracks it in {@link Hallmarq.#inFlightSends}
+   * until it settles, so {@link Hallmarq.flush} can wait for a batch that
+   * already left `#openBatches` on its own (sent by its `maxWaitMs` timer
+   * or by reaching `maxItems`), not just the ones `flush` itself triggers.
+   * `#sendBatch` never rejects (see its own doc), but `.then` is used with
+   * both handlers rather than `.finally` so cleanup is guaranteed even if
+   * that ever changes.
+   */
+  #trackSend(batch: OpenBatch): Promise<void> {
+    const sendPromise = this.#sendBatch(batch);
+    this.#inFlightSends.add(sendPromise);
+    const cleanup = (): void => {
+      this.#inFlightSends.delete(sendPromise);
+    };
+    sendPromise.then(cleanup, cleanup);
+    return sendPromise;
+  }
+
+  /**
    * Sends every open batch now, regardless of `maxItems`/`maxWaitMs`, and
-   * resolves once all of them have settled. **Never rejects**: a batch
-   * that fails delivers its error through each of its items' own promises
-   * (see {@link Hallmarq.stampBatched}), not through `flush`'s — so a
-   * caller awaiting `flush()` only learns a batch failed by also awaiting
-   * (or otherwise observing) that batch's own item promises.
+   * resolves once all of them — including any batch already sending on its
+   * own before this call (see {@link Hallmarq.#trackSend}) — have settled.
+   * **Never rejects**: a batch that fails delivers its error through each
+   * of its items' own promises (see {@link Hallmarq.stampBatched}), not
+   * through `flush`'s — so a caller awaiting `flush()` only learns a batch
+   * failed by also awaiting (or otherwise observing) that batch's own item
+   * promises.
    */
   async flush(): Promise<void> {
     const batches = [...this.#openBatches.values()];
     this.#openBatches.clear();
-    await Promise.all(batches.map((batch) => this.#sendBatch(batch)));
+    for (const batch of batches) {
+      void this.#trackSend(batch);
+    }
+    // #trackSend adds synchronously, before any await, so by this point
+    // #inFlightSends already holds both the batches just started above and
+    // any that were already sending before this call.
+    await Promise.all([...this.#inFlightSends]);
   }
 
   /**

@@ -96,6 +96,7 @@ function makeHallmarq(options: {
   signer?: Signer;
   confirmations?: number;
   confirmTimeoutMs?: number;
+  batch?: { maxItems?: number; maxWaitMs?: number };
 }): Hallmarq {
   return new Hallmarq({
     // Unused when `signer` has its own provider (every write-path test
@@ -111,6 +112,7 @@ function makeHallmarq(options: {
     // itself. The dedicated "2 confirmations" test overrides this.
     confirmations: options.confirmations ?? 1,
     confirmTimeoutMs: options.confirmTimeoutMs,
+    batch: options.batch,
   });
 }
 
@@ -442,5 +444,121 @@ describe("SDK integration (Hallmarq against a real deployed StampRegistry)", () 
     );
 
     expect(batchGas).to.be.lessThan(singleStampGasTotal);
+  });
+
+  // These four tests all need a signer that can actually `signTransaction`
+  // — Hardhat's own test signers (HardhatEthersSigner, the `alice`/`bob`
+  // every other test in this file uses) can't, and silently take the
+  // fallback `eth_sendTransaction` send path instead, where Hardhat itself
+  // assigns the nonce and the race these tests exist to catch can't
+  // happen. A real `ethers.Wallet` signs locally and goes through the real
+  // populate/sign/broadcast path the send lock protects. The key is
+  // Hardhat's well-known default account #0 — a public test fixture, not
+  // a secret, the same one the two-signer race test above uses for alice.
+  function lockTestSigner() {
+    return new Wallet(
+      "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+      ethers.provider,
+    );
+  }
+
+  it("flush() sends concurrent stampRoot transactions for 3 models from one signer with consecutive nonces, not a nonce collision", async () => {
+    const { registryAddress, chainId, deploymentBlock } = await deploy();
+    const signer = lockTestSigner();
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer });
+
+    const pending = [
+      hallmarq.stampBatched("integration: lock test model-a item", { model: "model-a" }),
+      hallmarq.stampBatched("integration: lock test model-b item", { model: "model-b" }),
+      hallmarq.stampBatched("integration: lock test model-c item", { model: "model-c" }),
+    ];
+    await hallmarq.flush();
+    const receipts = await Promise.all(pending);
+
+    expect(receipts).to.have.lengthOf(3);
+    const nonces = await Promise.all(
+      receipts.map(async (r) => (await ethers.provider.getTransaction(r.txHash))!.nonce),
+    );
+    const sorted = [...nonces].sort((a, b) => a - b);
+    expect(sorted).to.deep.equal([sorted[0], sorted[0] + 1, sorted[0] + 2]);
+    expect(new Set(nonces).size).to.equal(3);
+  });
+
+  it("two concurrent stamp() calls from the same signer both succeed, with consecutive nonces", async () => {
+    const { registryAddress, chainId, deploymentBlock } = await deploy();
+    const signer = lockTestSigner();
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer });
+
+    const [a, b] = await Promise.all([
+      hallmarq.stamp("integration: lock test concurrent stamp A", { model: "gpt-4o" }),
+      hallmarq.stamp("integration: lock test concurrent stamp B", { model: "gpt-4o" }),
+    ]);
+
+    const [nonceA, nonceB] = await Promise.all([
+      ethers.provider.getTransaction(a.txHash).then((tx) => tx!.nonce),
+      ethers.provider.getTransaction(b.txHash).then((tx) => tx!.nonce),
+    ]);
+    expect(Math.abs(nonceA - nonceB)).to.equal(1);
+  });
+
+  it("a size-triggered batch firing while another is already in flight: both succeed, with consecutive nonces", async () => {
+    const { registryAddress, chainId, deploymentBlock } = await deploy();
+    const signer = lockTestSigner();
+    const hallmarq = makeHallmarq({
+      registryAddress,
+      chainId,
+      deploymentBlock,
+      signer,
+      batch: { maxItems: 1, maxWaitMs: 30_000 },
+    });
+
+    // maxItems: 1 means each call below triggers its own batch send
+    // immediately — the second fires while the first is still (at least
+    // momentarily) in flight.
+    const first = hallmarq.stampBatched("integration: lock test size-triggered A", {
+      model: "gpt-4o",
+    });
+    const second = hallmarq.stampBatched("integration: lock test size-triggered B", {
+      model: "gpt-4o",
+    });
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.batchSize).to.equal(1);
+    expect(b.batchSize).to.equal(1);
+    const [nonceA, nonceB] = await Promise.all([
+      ethers.provider.getTransaction(a.txHash).then((tx) => tx!.nonce),
+      ethers.provider.getTransaction(b.txHash).then((tx) => tx!.nonce),
+    ]);
+    expect(Math.abs(nonceA - nonceB)).to.equal(1);
+  });
+
+  it("releases the send lock when a transaction fails, so a later call from the same signer isn't stuck", async () => {
+    const { registryAddress, chainId, deploymentBlock } = await deploy();
+    const signer = lockTestSigner();
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer });
+    const content = "integration: lock test duplicate content from one signer";
+
+    // Both calls target the same content. Automine stays on: the first
+    // call's populate/sign/broadcast (and, with automine, its mining) runs
+    // to completion under the send lock before the second call's populate
+    // step starts. By then the content is already stamped, so the
+    // second's own gas estimation (inside `signer.populateTransaction`)
+    // simulates against that state and fails before it ever signs or
+    // broadcasts anything — a failure inside the locked section, same as
+    // the "Must fix" review comment's concern, just surfacing at
+    // estimation rather than at the broadcast call itself.
+    const firstPromise = hallmarq.stamp(content, { model: "gpt-4o" });
+    const secondPromise = hallmarq.stamp(content, { model: "gpt-4o" }).catch((e: unknown) => e);
+
+    const [firstReceipt, secondError] = await Promise.all([firstPromise, secondPromise]);
+    expect(firstReceipt.txHash).to.be.a("string");
+    expect(secondError).to.be.instanceOf(Error);
+
+    // The lock must have been released despite the second call's failure:
+    // a third, unrelated call from the same signer still succeeds.
+    const third = await hallmarq.stamp("integration: lock test after failure", {
+      model: "gpt-4o",
+    });
+    expect(third.txHash).to.be.a("string");
   });
 });
