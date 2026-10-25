@@ -1,0 +1,159 @@
+name: MST testnet deploy tooling
+
+# Manual only: the founder runs this. The engineer who wrote this workflow
+# must never trigger `deploy` themselves (docs/ROADMAP.md item 5).
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Which script to run"
+        required: true
+        type: choice
+        options:
+          - deploy
+          - verify
+          - smoke
+        default: verify
+      address:
+        description: >-
+          StampRegistry address. Only needed for verify/smoke when
+          deployments/mstTestnet.json hasn't been committed yet (before
+          Roadmap PR 5b lands).
+        required: false
+        type: string
+      deploymentBlock:
+        description: >-
+          Block StampRegistry was deployed at. Only needed alongside
+          'address', for the same reason.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-testnet-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: ${{ inputs.action }} on MST testnet
+    runs-on: ubuntu-latest
+    environment: testnet
+    env:
+      # Public network config (docs/DECISIONS.md D13) — not secrets.
+      MST_RPC_URL: https://testnetrpc.mstblockchain.com
+      MST_CHAIN_ID: "91562037"
+      # DEPLOYER_PRIVATE_KEY is deliberately NOT set here: a job-level env var
+      # is visible to every step, including `pnpm install`'s dependency
+      # lifecycle scripts across our whole dependency tree. It's set only on
+      # the steps below that actually need it.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Compile contracts
+        run: pnpm exec hardhat compile
+
+      - name: Resolve deployments/mstTestnet.json
+        if: inputs.action != 'deploy'
+        shell: bash
+        env:
+          # Never interpolate `${{ inputs.* }}` directly into `run:` — that
+          # pastes it into the script before bash parses it (script
+          # injection). Pass it through env and validate the format below.
+          INPUT_ADDRESS: ${{ inputs.address }}
+          INPUT_DEPLOYMENT_BLOCK: ${{ inputs.deploymentBlock }}
+        run: |
+          if [ -f deployments/mstTestnet.json ]; then
+            echo "Using committed deployments/mstTestnet.json"
+          elif [ -n "$INPUT_ADDRESS" ] && [ -n "$INPUT_DEPLOYMENT_BLOCK" ]; then
+            if [[ ! "$INPUT_ADDRESS" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+              echo "::error::'address' must be a 0x-prefixed 20-byte hex address, got \"$INPUT_ADDRESS\"."
+              exit 1
+            fi
+            if [[ ! "$INPUT_DEPLOYMENT_BLOCK" =~ ^[0-9]+$ ]]; then
+              echo "::error::'deploymentBlock' must be a positive integer, got \"$INPUT_DEPLOYMENT_BLOCK\"."
+              exit 1
+            fi
+            mkdir -p deployments
+            printf '{\n  "chainId": %s,\n  "address": "%s",\n  "blockNumber": %s\n}\n' \
+              "${MST_CHAIN_ID}" "${INPUT_ADDRESS}" "${INPUT_DEPLOYMENT_BLOCK}" \
+              > deployments/mstTestnet.json
+            echo "Wrote deployments/mstTestnet.json from the address/deploymentBlock inputs."
+          else
+            echo "::error::No committed deployments/mstTestnet.json, and the 'address'/'deploymentBlock' inputs were not both given."
+            exit 1
+          fi
+
+      - name: Run deploy.ts
+        if: inputs.action == 'deploy'
+        shell: bash
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+        run: pnpm exec hardhat run scripts/deploy.ts --network mstTestnet --build-profile default | tee run-output.log
+
+      - name: Run verify.ts
+        if: inputs.action == 'verify'
+        shell: bash
+        env:
+          # verify.ts never signs anything, but hardhat.config.ts only
+          # defines the mstTestnet network (and its accounts) once
+          # DEPLOYER_PRIVATE_KEY is set, so a well-formed placeholder lets
+          # the network resolve without ever exposing the real deploy key
+          # to a step that doesn't need it.
+          DEPLOYER_PRIVATE_KEY: "0x1111111111111111111111111111111111111111111111111111111111111111"
+        run: pnpm exec hardhat run scripts/verify.ts --network mstTestnet --build-profile default | tee run-output.log
+
+      - name: Run smoke.ts
+        if: inputs.action == 'smoke'
+        shell: bash
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+        run: pnpm exec hardhat run scripts/smoke.ts --network mstTestnet --build-profile default | tee run-output.log
+
+      # Defense in depth: DEPLOYER_PRIVATE_KEY is a registered secret, so
+      # GitHub Actions already masks its literal value in logs. This also
+      # catches anything that logs the variable itself (name, a stack trace
+      # dumping env, etc.) even if the masked value slips past that.
+      - name: Check logs never mention private key material
+        if: always()
+        shell: bash
+        run: |
+          if [ -f run-output.log ] && grep -F "PRIVATE" run-output.log; then
+            echo "::error::run-output.log contains the string 'PRIVATE' — treating this as a possible key leak."
+            exit 1
+          fi
+
+      - name: Upload deployments/mstTestnet.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mstTestnet-deployment
+          path: deployments/mstTestnet.json
+          if-no-files-found: ignore
+
+      - name: Upload smoke-test output
+        if: always() && inputs.action == 'smoke'
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-output
+          path: |
+            run-output.log
+            deployments/smoke-receipts/
+          if-no-files-found: ignore
