@@ -353,16 +353,21 @@ describe("Hallmarq.stamp", () => {
     expect(provider.broadcastTransaction).toHaveBeenCalledTimes(1);
   });
 
-  it("wraps an unrecognized network failure that exhausts every retry as NetworkError", async () => {
+  it("throws NotConfirmed(txHash) when every broadcast retry fails with a transport error, since the tx may still be in flight", async () => {
     const provider = makeFakeProvider();
     provider.broadcastTransaction.mockRejectedValue(networkFailure());
-    const hallmarq = makeHallmarq(makeFakeSigner(provider));
+    const signer = makeFakeSigner(provider);
+    const hallmarq = makeHallmarq(signer);
 
     const error: unknown = await hallmarq
       .stamp("hello", { model: "gpt-4o" })
       .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(NetworkError);
+    expect(error).toBeInstanceOf(NotConfirmed);
+    expect((error as NotConfirmed).txHash).toBe(keccak256(RAW_SIGNED_TX));
     expect(provider.broadcastTransaction).toHaveBeenCalledTimes(3);
+    expect((signer as unknown as { signTransaction: Mock }).signTransaction).toHaveBeenCalledTimes(
+      1,
+    );
   }, 10_000);
 
   it("recovers from an 'already known' broadcast error by looking up the already-broadcast transaction, instead of resending", async () => {
@@ -413,6 +418,54 @@ describe("Hallmarq.stamp", () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(NetworkError);
     expect(fakeContract.stamp).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back for a signer reporting unsupported signing via a JSON-RPC 'method not found' code", async () => {
+    const provider = makeFakeProvider();
+    const signer = makeFakeSigner(provider);
+    (signer.signTransaction as Mock).mockRejectedValue(
+      Object.assign(new Error("method not found"), { code: -32601 }),
+    );
+    fakeContract.stamp.mockResolvedValue(successfulTx("0xtx", 1));
+    const hallmarq = makeHallmarq(signer);
+
+    const receipt = await hallmarq.stamp("hello", { model: "gpt-4o" });
+
+    expect(receipt.txHash).toBe("0xtx");
+    expect(provider.broadcastTransaction).not.toHaveBeenCalled();
+  });
+
+  it("falls back for a signer whose signTransaction says it isn't implemented (Hardhat's own test signers)", async () => {
+    const provider = makeFakeProvider();
+    const signer = makeFakeSigner(provider);
+    (signer.signTransaction as Mock).mockRejectedValue(
+      new Error('HHE20000: Method "HardhatEthersSigner.signTransaction" is not implemented'),
+    );
+    fakeContract.stamp.mockResolvedValue(successfulTx("0xtx", 1));
+    const hallmarq = makeHallmarq(signer);
+
+    const receipt = await hallmarq.stamp("hello", { model: "gpt-4o" });
+
+    expect(receipt.txHash).toBe("0xtx");
+    expect(provider.broadcastTransaction).not.toHaveBeenCalled();
+  });
+
+  it("never falls back for a signer that rejects the signing prompt (ACTION_REJECTED): the user is not prompted twice", async () => {
+    const provider = makeFakeProvider();
+    const signer = makeFakeSigner(provider);
+    const rejection = Object.assign(new Error("User rejected the request"), {
+      code: "ACTION_REJECTED",
+    });
+    (signer.signTransaction as Mock).mockRejectedValue(rejection);
+    const hallmarq = makeHallmarq(signer);
+
+    const error: unknown = await hallmarq
+      .stamp("hello", { model: "gpt-4o" })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(NetworkError);
+    expect((error as NetworkError).cause).toBe(rejection);
+    expect(fakeContract.stamp).not.toHaveBeenCalled();
+    expect(provider.broadcastTransaction).not.toHaveBeenCalled();
   });
 
   it("never resends once a transaction hash exists: a wait() timeout throws NotConfirmed, not a second send", async () => {

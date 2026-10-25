@@ -32,7 +32,7 @@ import {
   WrongNetwork,
 } from "./errors.js";
 import { stampRegistryAbi } from "./generated/stampRegistryAbi.js";
-import { withRetry } from "./retry.js";
+import { isRetryableError, withRetry } from "./retry.js";
 import type {
   HallmarqOptions,
   Receipt,
@@ -104,6 +104,27 @@ function isAlreadyBroadcastError(error: unknown): boolean {
     return true;
   }
   return typeof message === "string" && /already known|nonce too low/i.test(message);
+}
+
+/**
+ * True only when a signer genuinely can't produce a raw signed
+ * transaction — ethers' `UNSUPPORTED_OPERATION`, a JSON-RPC "method not
+ * found" (`-32601`), or a message that plainly says so (this is how
+ * Hardhat's own test signers report it: `"... is not implemented"`).
+ * Deliberately narrow: a signer that *can* sign raw transactions but
+ * whose signing prompt the user rejected (`ACTION_REJECTED`) must not
+ * fall into the fallback send below, or the user gets prompted twice for
+ * one `stamp()` call.
+ */
+function isUnsupportedSigning(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  if (code === "UNSUPPORTED_OPERATION" || code === -32601) {
+    return true;
+  }
+  return typeof message === "string" && /not supported|not implemented/i.test(message);
 }
 
 /**
@@ -215,10 +236,13 @@ export class Hallmarq {
    *
    * Not every signer can produce a raw signed transaction: a browser
    * wallet only exposes `eth_sendTransaction`, and even Hardhat's own test
-   * signers don't implement `signTransaction`. For any of those, this
-   * falls back to a single, unretried send instead — whatever the reason
-   * `signTransaction` itself failed for, nothing has been broadcast yet,
-   * so falling back is always safe. See the README's "Retries" section.
+   * signers don't implement `signTransaction`. For any of those (see
+   * {@link isUnsupportedSigning}), this falls back to a single, unretried
+   * send instead — nothing has been broadcast yet, so falling back is
+   * always safe. Anything else `signTransaction` throws (a wallet
+   * rejection in particular) is rethrown as-is, or the caller would get
+   * prompted to sign twice for one `stamp()` call. See the README's
+   * "Retries" section.
    */
   async #sendStampTransaction(
     contentHash: Hex,
@@ -238,8 +262,11 @@ export class Hallmarq {
     let raw: string;
     try {
       raw = await signer.signTransaction(populated);
-    } catch {
-      return (await signerContract.stamp(contentHash, model, metaHash)) as TransactionResponse;
+    } catch (error) {
+      if (isUnsupportedSigning(error)) {
+        return (await signerContract.stamp(contentHash, model, metaHash)) as TransactionResponse;
+      }
+      throw error;
     }
 
     const txHash = keccak256(raw);
@@ -251,6 +278,14 @@ export class Hallmarq {
         if (existing) {
           return existing;
         }
+      }
+      if (isRetryableError(error)) {
+        // Every attempt failed as a transport error, so the broadcast's
+        // outcome is unknown: the signed transaction may have reached the
+        // node despite the lost response, and could still be in flight.
+        // The caller gets the hash to look up, never a reason to sign and
+        // send a second, independent transaction for the same content.
+        throw new NotConfirmed(txHash);
       }
       throw error;
     }
@@ -346,6 +381,12 @@ export class Hallmarq {
       try {
         tx = await this.#sendStampTransaction(contentHash, options.model, metaHash);
       } catch (error) {
+        // #sendStampTransaction can throw NotConfirmed directly (an
+        // exhausted-retry broadcast whose outcome is unknown); that must
+        // reach the caller as-is, not get re-wrapped into NetworkError.
+        if (error instanceof HallmarqError) {
+          throw error;
+        }
         throw toHallmarqError(error);
       }
 

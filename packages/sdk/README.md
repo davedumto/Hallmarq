@@ -113,7 +113,7 @@ wrapped as `NetworkError`.
 | `InvalidMeta`    | `INVALID_META`    | `stamp`                 | —                                  | `meta` (or something nested in it) can't be canonical JSON: `undefined`, a function, a `bigint`, `NaN`, `Infinity`/`-Infinity`, a circular reference, or an object that isn't a plain object or array (a `Date`, `Map`, `Set`, `RegExp`, a typed array, a class instance, ...).            |
 | `InvalidHex`     | `INVALID_HEX`     | `verifyInBatch`         | —                                  | `root` or a `proof` element isn't 32-byte hex.                                                                                                                                                                                                                                             |
 | `AlreadyStamped` | `ALREADY_STAMPED` | `stamp`                 | `contentHash`, `txHash?`           | The registry already has this content hashed. Usually caught by the preflight (`txHash` unset: no transaction was ever sent for this call); occasionally a transaction is mined and reverts because someone else's stamp for the same content landed first — `txHash` is set in that case. |
-| `NotConfirmed`   | `NOT_CONFIRMED`   | `stamp`                 | `txHash`                           | A transaction was sent (so it has a hash and is never resent) but didn't reach `confirmations` within `confirmTimeoutMs`.                                                                                                                                                                  |
+| `NotConfirmed`   | `NOT_CONFIRMED`   | `stamp`                 | `txHash`                           | A transaction was sent (so it has a hash and is never resent) but didn't reach `confirmations` within `confirmTimeoutMs`; or every broadcast retry exhausted on a transport error, leaving the transaction's fate unknown.                                                                 |
 | `NetworkError`   | `NETWORK_ERROR`   | any method              | `cause`                            | Sending or reading failed for a reason that isn't one of the above — including an exhausted retry and any unrecognized contract revert.                                                                                                                                                    |
 | `NoSigner`       | `NO_SIGNER`       | `stamp`                 | —                                  | Called without a configured `signer`.                                                                                                                                                                                                                                                      |
 | `ConfigError`    | `CONFIG_ERROR`    | constructor, any method | —                                  | `rpcUrl` or `registryAddress` resolves to nothing (at construction, not on first use); or there's no contract code at `registryAddress` (checked once, on first use of any method).                                                                                                        |
@@ -146,7 +146,18 @@ in flight and the user paying gas for a doomed second one.
   single, **unretried** send instead (the ordinary `signer.sendTransaction`
   path): without a raw signed transaction to re-broadcast, a retry here
   would have to resend by calling the contract method again, which risks
-  the same double-send the sign-once design exists to avoid.
+  the same double-send the sign-once design exists to avoid. This fallback
+  only triggers when the signer genuinely can't sign raw transactions
+  (`UNSUPPORTED_OPERATION`, a JSON-RPC "method not found", or a message
+  that says so) — a signer that _can_ sign but whose signing prompt the
+  user rejected (`ACTION_REJECTED`) is never silently retried through the
+  fallback, or the user would be prompted to sign twice for one call.
+- If every broadcast retry exhausts on a transport error, the transaction's
+  fate is unknown — the node may have received it despite the lost
+  response, so it could still be in flight. `stamp` throws
+  `NotConfirmed(txHash)` in that case (never a hashless `NetworkError`),
+  since the caller already has a signed transaction out there and must
+  look it up by hash rather than ever stamping the same content again.
 - Once a transaction hash exists, it is **never resent** by any path:
   `stamp` either waits for `confirmations` or throws `NotConfirmed(txHash)`.
   If that transaction is mined but reverts because someone else's stamp for
