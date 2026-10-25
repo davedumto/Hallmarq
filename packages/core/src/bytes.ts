@@ -3,6 +3,7 @@ import type { Hex } from "./types.js";
 
 const HEX_CHARS = "0123456789abcdef";
 const HEX_DIGITS_ONLY = /^[0-9a-fA-F]*$/;
+const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 
 /** Encodes bytes as a lowercase, `0x`-prefixed hex string. */
 export function toHex(bytes: Uint8Array): Hex {
@@ -55,6 +56,19 @@ export function assertHash32(hex: string): Uint8Array {
     throw new InvalidHex(`expected a 32-byte hash, got ${bytes.length} bytes in "${hex}"`);
   }
   return bytes;
+}
+
+/**
+ * Validates that `address` is a well-formed 20-byte hex Ethereum address: a
+ * `0x` prefix followed by exactly 40 hex digits. Doesn't check EIP-55
+ * checksum casing — only the shape a `ReceiptFile`'s `registryAddress`
+ * (or any other address read from untrusted input) is required to have.
+ */
+export function assertAddress(address: string): string {
+  if (!ADDRESS_PATTERN.test(address)) {
+    throw new InvalidHex(`expected a 20-byte hex address, got "${address}"`);
+  }
+  return address;
 }
 
 /** Concatenates any number of byte arrays into one. */

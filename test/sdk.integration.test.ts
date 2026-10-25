@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 
 import { buildTree, getProof, hashText } from "@hallmarq/core";
 import { AlreadyStamped, Hallmarq } from "@hallmarq/sdk";
-import type { Receipt, VerifyResult } from "@hallmarq/sdk";
+import type { BatchReceipt, Receipt, VerifyResult } from "@hallmarq/sdk";
 import { expect } from "chai";
 import { Wallet, type Signer } from "ethers";
 import { network } from "hardhat";
@@ -328,5 +328,119 @@ describe("SDK integration (Hallmarq against a real deployed StampRegistry)", () 
     } finally {
       await ethers.provider.send("evm_setAutomine", [true]);
     }
+  });
+
+  it("a batch of 5 (one duplicate) sends exactly one transaction; every receipt verifies via verifyInBatch and verifyReceipt", async () => {
+    const { registryAddress, chainId, deploymentBlock, alice } = await deploy();
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer: alice });
+
+    const contents = [
+      "integration: batch item A",
+      "integration: batch item B",
+      "integration: batch item A", // duplicate of the first, at a different position
+      "integration: batch item D",
+      "integration: batch item E",
+    ];
+
+    const pending = contents.map((content) => hallmarq.stampBatched(content, { model: "gpt-4o" }));
+    await hallmarq.flush();
+    const receipts: BatchReceipt[] = await Promise.all(pending);
+
+    // Every item's receipt shares the same txHash: proof that all 5 went
+    // out in a single stampRoot transaction, not 5 separate ones.
+    const uniqueTxHashes = new Set(receipts.map((r) => r.txHash));
+    expect(uniqueTxHashes.size).to.equal(1);
+    expect(receipts.every((r) => r.batchSize === 5)).to.equal(true);
+    expect(receipts.map((r) => r.index)).to.deep.equal([0, 1, 2, 3, 4]);
+    // The duplicate (index 0 and 2) gets two different, independently
+    // correct proofs, since each is a distinct position in the tree.
+    expect(receipts[0].proof).to.not.deep.equal(receipts[2].proof);
+
+    for (let i = 0; i < contents.length; i++) {
+      const receipt = receipts[i];
+
+      const viaVerifyInBatch = await hallmarq.verifyInBatch(contents[i], {
+        root: receipt.root,
+        proof: receipt.proof,
+      });
+      expect(viaVerifyInBatch.status).to.equal("found-in-batch");
+      if (viaVerifyInBatch.status !== "found-in-batch") throw new Error("unreachable");
+      expect(viaVerifyInBatch.root).to.equal(receipt.root);
+
+      const viaVerifyReceipt = await hallmarq.verifyReceipt(contents[i], receipt.receiptFile);
+      expect(viaVerifyReceipt.status).to.equal("found-in-batch");
+    }
+  });
+
+  it("verifyReceipt throws ConfigError when the receipt's chainId doesn't match this instance's configured chainId", async () => {
+    const { registryAddress, chainId, deploymentBlock, alice } = await deploy();
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer: alice });
+
+    const content = "integration: receipt with the wrong chainId";
+    const pending = hallmarq.stampBatched(content, { model: "gpt-4o" });
+    await hallmarq.flush();
+    const receipt = await pending;
+
+    let error: unknown;
+    try {
+      await hallmarq.verifyReceipt(content, { ...receipt.receiptFile, chainId: chainId + 1 });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).to.be.instanceOf(Error);
+    expect((error as Error).name).to.equal("ConfigError");
+  });
+
+  it("verifyReceipt throws ConfigError when the receipt's registryAddress doesn't match this instance's", async () => {
+    const { registryAddress, chainId, deploymentBlock, alice } = await deploy();
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer: alice });
+
+    const content = "integration: receipt with the wrong registryAddress";
+    const pending = hallmarq.stampBatched(content, { model: "gpt-4o" });
+    await hallmarq.flush();
+    const receipt = await pending;
+
+    const otherAddress = "0x" + "99".repeat(20);
+    let error: unknown;
+    try {
+      await hallmarq.verifyReceipt(content, {
+        ...receipt.receiptFile,
+        registryAddress: otherAddress,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).to.be.instanceOf(Error);
+    expect((error as Error).name).to.equal("ConfigError");
+  });
+
+  it("measures gas: one stampRoot(5) vs 5 individual stamp() calls, for the PR's cost comparison", async () => {
+    // registry is deployed by (and so already sends as) the default
+    // signer, the same account as alice; connect()ing it to alice again
+    // would only widen its type back down to the untyped BaseContract.
+    const { registry } = await deploy();
+
+    let singleStampGasTotal = 0n;
+    for (let i = 0; i < 5; i++) {
+      const contentHash = hashText(`integration: gas measurement single stamp ${i}`);
+      const tx = await registry.stamp(contentHash, "gpt-4o", ethers.ZeroHash);
+      const txReceipt = await tx.wait();
+      singleStampGasTotal += txReceipt!.gasUsed;
+    }
+
+    const hashes = Array.from({ length: 5 }, (_, i) =>
+      hashText(`integration: gas measurement batch item ${i}`),
+    );
+    const tree = buildTree(hashes);
+    const batchTx = await registry.stampRoot(tree.root, 5, "gpt-4o");
+    const batchTxReceipt = await batchTx.wait();
+    const batchGas = batchTxReceipt!.gasUsed;
+
+    console.log(
+      `\n    gas: 5x stamp()     = ${singleStampGasTotal} total, ${singleStampGasTotal / 5n} avg/item` +
+        `\n    gas: 1x stampRoot(5) = ${batchGas} total, ${batchGas / 5n} avg/item\n`,
+    );
+
+    expect(batchGas).to.be.lessThan(singleStampGasTotal);
   });
 });

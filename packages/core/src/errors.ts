@@ -60,3 +60,19 @@ export class InvalidHex extends HallmarqError {
     this.name = "InvalidHex";
   }
 }
+
+/**
+ * Thrown by `parseReceiptFile` when the given value isn't a well-formed
+ * `ReceiptFile`: wrong `version`, a missing or malformed field, or an
+ * unknown extra field. The message names the offending field, since a
+ * receipt file is usually hand-saved by a caller and the failure needs to
+ * be actionable without a debugger.
+ */
+export class InvalidReceipt extends HallmarqError {
+  readonly code = "INVALID_RECEIPT";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidReceipt";
+  }
+}

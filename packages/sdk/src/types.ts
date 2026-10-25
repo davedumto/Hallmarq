@@ -1,13 +1,16 @@
-import type { Hex } from "@hallmarq/core";
+import type { Hex, ReceiptFile } from "@hallmarq/core";
 import type { Signer } from "ethers";
 
 /**
- * Reserved for `stampBatched`/`flush` (roadmap item 7). Accepted here so a
- * caller can pass it now without a breaking change later; `Hallmarq`
- * doesn't read it yet.
+ * Controls how `stampBatched` groups items into batches. Every open batch
+ * (there's one per `model` label; see `StampBatchedOptions`) is sent once
+ * it reaches `maxItems`, once `maxWaitMs` has passed since its first item,
+ * or when `flush()` is called — whichever happens first.
  */
 export interface BatchOptions {
+  /** Items per batch before it's sent automatically. Default `256`. */
   readonly maxItems?: number;
+  /** Milliseconds to wait, from the first item, before sending. Default `30000`. */
   readonly maxWaitMs?: number;
 }
 
@@ -26,7 +29,7 @@ export interface HallmarqOptions {
   readonly confirmations?: number;
   /** Milliseconds to wait for `confirmations` before `stamp` throws `NotConfirmed`. */
   readonly confirmTimeoutMs?: number;
-  /** Reserved for roadmap item 7 (`stampBatched`/`flush`); unused by this version. */
+  /** Controls how `stampBatched` groups items into batches. See `BatchOptions`. */
   readonly batch?: BatchOptions;
 }
 
@@ -40,12 +43,37 @@ export interface StampOptions {
   readonly meta?: Record<string, unknown>;
 }
 
+/**
+ * `stampRoot` (and therefore every batch) has no `metaHash` field at all —
+ * unlike `stamp`, `stampBatched` doesn't accept `meta`.
+ */
+export interface StampBatchedOptions {
+  /** A model label, for example `"gpt-4o"`. At most 64 UTF-8 bytes. One open batch per label. */
+  readonly model: string;
+}
+
 export interface Receipt {
   readonly contentHash: Hex;
   readonly txHash: string;
   readonly blockNumber: number;
   readonly registrant: string;
   readonly model: string;
+}
+
+/**
+ * What `stampBatched` resolves with once its batch is confirmed. Everything
+ * in `Receipt`, plus the batch's Merkle `root`, this item's own `proof`
+ * (the chain only stores `root` — callers must keep `proof` themselves to
+ * ever verify this item again), the batch's total size, this item's index
+ * within it, and `receiptFile` — the same data as a ready-to-save
+ * `ReceiptFile` (see `@hallmarq/core`).
+ */
+export interface BatchReceipt extends Receipt {
+  readonly root: Hex;
+  readonly proof: readonly Hex[];
+  readonly batchSize: number;
+  readonly index: number;
+  readonly receiptFile: ReceiptFile;
 }
 
 export interface VerifyInBatchOptions {

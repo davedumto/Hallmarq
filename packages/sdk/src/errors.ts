@@ -92,6 +92,21 @@ export class ConfigError extends HallmarqError {
   }
 }
 
+/**
+ * Thrown by `stampBatched` once `close()` has been called on this
+ * instance. `close()` flushes every open batch and then refuses new ones,
+ * so a caller shutting down never has to wonder whether a just-queued item
+ * silently joined a batch that's never going to send.
+ */
+export class Closed extends HallmarqError {
+  readonly code = "CLOSED";
+
+  constructor(message = "This Hallmarq instance is closed; stampBatched can no longer be called") {
+    super(message);
+    this.name = "Closed";
+  }
+}
+
 /** Thrown before the first write if the provider's chain ID doesn't match the configured one. */
 export class WrongNetwork extends HallmarqError {
   readonly code = "WRONG_NETWORK";

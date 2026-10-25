@@ -1,13 +1,16 @@
 import {
   assertHash32,
+  buildTree,
   EmptyContent,
+  getProof,
   HallmarqError,
   hashBytes,
   hashText,
   mstTestnet,
   normalizeText,
+  parseReceiptFile,
 } from "@hallmarq/core";
-import type { Hex } from "@hallmarq/core";
+import type { Hex, MerkleTree, ReceiptFile } from "@hallmarq/core";
 import {
   Contract,
   isCallException,
@@ -15,6 +18,7 @@ import {
   keccak256,
   ZeroAddress,
   ZeroHash,
+  type ContractTransaction,
   type Provider,
   type Signer,
   type TransactionReceipt,
@@ -25,6 +29,7 @@ import { toHallmarqError } from "./abiErrors.js";
 import { canonicalJsonStringify } from "./canonicalJson.js";
 import {
   AlreadyStamped,
+  Closed,
   ConfigError,
   ModelTooLong,
   NoSigner,
@@ -34,14 +39,19 @@ import {
 import { stampRegistryAbi } from "./generated/stampRegistryAbi.js";
 import { isRetryableError, withRetry } from "./retry.js";
 import type {
+  BatchReceipt,
   HallmarqOptions,
   Receipt,
+  StampBatchedOptions,
   StampOptions,
   VerifyInBatchOptions,
   VerifyResult,
 } from "./types.js";
 
 const MAX_MODEL_BYTES = 64;
+const DEFAULT_BATCH_MAX_ITEMS = 256;
+const DEFAULT_BATCH_MAX_WAIT_MS = 30_000;
+const MAX_BATCH_MAX_ITEMS = 2 ** 32 - 1;
 
 /**
  * The raw shapes `StampRegistry.verify`/`getBatch` resolve to. Without
@@ -61,6 +71,20 @@ interface BatchStruct {
   readonly timestamp: bigint;
   readonly count: bigint;
   readonly model: string;
+}
+
+/** One item queued by `stampBatched`, waiting for its batch to send. */
+interface PendingBatchItem {
+  readonly contentHash: Hex;
+  readonly resolve: (receipt: BatchReceipt) => void;
+  readonly reject: (error: unknown) => void;
+}
+
+/** One open batch: every item queued for `model` since the batch started. */
+interface OpenBatch {
+  readonly model: string;
+  readonly items: PendingBatchItem[];
+  timer: ReturnType<typeof setTimeout> | undefined;
 }
 
 function computeContentHash(content: string | Uint8Array): Hex {
@@ -114,7 +138,7 @@ function isAlreadyBroadcastError(error: unknown): boolean {
  * Deliberately narrow: a signer that *can* sign raw transactions but
  * whose signing prompt the user rejected (`ACTION_REJECTED`) must not
  * fall into the fallback send below, or the user gets prompted twice for
- * one `stamp()` call.
+ * one call.
  */
 function isUnsupportedSigning(error: unknown): boolean {
   if (typeof error !== "object" || error === null) {
@@ -125,6 +149,20 @@ function isUnsupportedSigning(error: unknown): boolean {
     return true;
   }
   return typeof message === "string" && /not supported|not implemented/i.test(message);
+}
+
+function validateBatchMaxItems(maxItems: number): void {
+  if (!Number.isInteger(maxItems) || maxItems < 1 || maxItems > MAX_BATCH_MAX_ITEMS) {
+    throw new ConfigError(
+      `batch.maxItems must be an integer from 1 to ${MAX_BATCH_MAX_ITEMS}, got ${maxItems}`,
+    );
+  }
+}
+
+function validateBatchMaxWaitMs(maxWaitMs: number): void {
+  if (!Number.isInteger(maxWaitMs) || maxWaitMs < 0) {
+    throw new ConfigError(`batch.maxWaitMs must be a non-negative integer, got ${maxWaitMs}`);
+  }
 }
 
 /**
@@ -143,14 +181,20 @@ export class Hallmarq {
   readonly #deploymentBlock: number | undefined;
   readonly #confirmations: number;
   readonly #confirmTimeoutMs: number;
+  readonly #batchMaxItems: number;
+  readonly #batchMaxWaitMs: number;
   #networkChecked = false;
   #contractExistenceChecked = false;
+  readonly #openBatches = new Map<string, OpenBatch>();
+  #closed = false;
 
   constructor(options: HallmarqOptions = {}) {
     const rpcUrl = options.rpcUrl ?? mstTestnet.rpcUrl;
     const chainId = options.chainId ?? mstTestnet.chainId;
     const registryAddress = options.registryAddress ?? mstTestnet.registryAddress;
     const deploymentBlock = options.deploymentBlock ?? mstTestnet.deploymentBlock;
+    const batchMaxItems = options.batch?.maxItems ?? DEFAULT_BATCH_MAX_ITEMS;
+    const batchMaxWaitMs = options.batch?.maxWaitMs ?? DEFAULT_BATCH_MAX_WAIT_MS;
 
     if (!registryAddress) {
       throw new ConfigError(
@@ -160,6 +204,8 @@ export class Hallmarq {
     if (!rpcUrl) {
       throw new ConfigError("rpcUrl is required: no default is configured for this network yet");
     }
+    validateBatchMaxItems(batchMaxItems);
+    validateBatchMaxWaitMs(batchMaxWaitMs);
 
     try {
       this.#signer = options.signer;
@@ -173,6 +219,8 @@ export class Hallmarq {
       this.#deploymentBlock = deploymentBlock;
       this.#confirmations = options.confirmations ?? 2;
       this.#confirmTimeoutMs = options.confirmTimeoutMs ?? 60_000;
+      this.#batchMaxItems = batchMaxItems;
+      this.#batchMaxWaitMs = batchMaxWaitMs;
 
       this.#readOnly = new Contract(registryAddress, stampRegistryAbi, this.#provider);
       this.#signerContract = this.#signer
@@ -227,36 +275,42 @@ export class Hallmarq {
     this.#contractExistenceChecked = true;
   }
 
+  /** The chain ID to put in a `ReceiptFile`: the configured one, or the provider's actual one. */
+  async #resolveChainId(): Promise<number> {
+    if (this.#chainId !== undefined) {
+      return this.#chainId;
+    }
+    const network = await this.#provider.getNetwork();
+    return Number(network.chainId);
+  }
+
   /**
-   * Sends the stamp transaction, signing it once so that a retry — needed
+   * Signs `populateTx`'s transaction exactly once so that a retry — needed
    * only when the broadcast's response is lost, not when it fails outright
    * — can never end up as a second, independently-signed transaction. The
    * transaction (and its hash) is fixed before anything is sent; only the
-   * idempotent re-broadcast of those exact signed bytes is retried.
+   * idempotent re-broadcast of those exact signed bytes is retried. Shared
+   * by `stamp` (`StampRegistry.stamp`) and the batch sender
+   * (`StampRegistry.stampRoot`) — the only difference between them is which
+   * contract call gets populated and, as a fallback, sent directly.
    *
    * Not every signer can produce a raw signed transaction: a browser
    * wallet only exposes `eth_sendTransaction`, and even Hardhat's own test
    * signers don't implement `signTransaction`. For any of those (see
-   * {@link isUnsupportedSigning}), this falls back to a single, unretried
-   * send instead — nothing has been broadcast yet, so falling back is
-   * always safe. Anything else `signTransaction` throws (a wallet
-   * rejection in particular) is rethrown as-is, or the caller would get
-   * prompted to sign twice for one `stamp()` call. See the README's
-   * "Retries" section.
+   * {@link isUnsupportedSigning}), this falls back to `fallbackSend` — a
+   * single, unretried send — instead; nothing has been broadcast yet, so
+   * falling back is always safe. Anything else `signTransaction` throws (a
+   * wallet rejection in particular) is rethrown as-is, or the caller would
+   * get prompted to sign twice for one call. See the README's "Retries"
+   * section.
    */
-  async #sendStampTransaction(
-    contentHash: Hex,
-    model: string,
-    metaHash: Hex,
+  async #signAndBroadcast(
+    populateTx: () => Promise<ContractTransaction>,
+    fallbackSend: () => Promise<TransactionResponse>,
   ): Promise<TransactionResponse> {
-    const signerContract = this.#signerContract!;
     const signer = this.#signer!;
 
-    const populatedCall = await signerContract.stamp.populateTransaction(
-      contentHash,
-      model,
-      metaHash,
-    );
+    const populatedCall = await populateTx();
     const populated = await signer.populateTransaction(populatedCall);
 
     let raw: string;
@@ -264,7 +318,7 @@ export class Hallmarq {
       raw = await signer.signTransaction(populated);
     } catch (error) {
       if (isUnsupportedSigning(error)) {
-        return (await signerContract.stamp(contentHash, model, metaHash)) as TransactionResponse;
+        return await fallbackSend();
       }
       throw error;
     }
@@ -291,9 +345,33 @@ export class Hallmarq {
     }
   }
 
+  async #sendStampTransaction(
+    contentHash: Hex,
+    model: string,
+    metaHash: Hex,
+  ): Promise<TransactionResponse> {
+    const signerContract = this.#signerContract!;
+    return this.#signAndBroadcast(
+      () => signerContract.stamp.populateTransaction(contentHash, model, metaHash),
+      () => signerContract.stamp(contentHash, model, metaHash) as Promise<TransactionResponse>,
+    );
+  }
+
+  async #sendStampRootTransaction(
+    root: Hex,
+    count: number,
+    model: string,
+  ): Promise<TransactionResponse> {
+    const signerContract = this.#signerContract!;
+    return this.#signAndBroadcast(
+      () => signerContract.stampRoot.populateTransaction(root, count, model),
+      () => signerContract.stampRoot(root, count, model) as Promise<TransactionResponse>,
+    );
+  }
+
   async #waitForConfirmations(
     tx: TransactionResponse,
-    contentHash: Hex,
+    resolveMinedFailure: (error: unknown) => Promise<Error>,
   ): Promise<TransactionReceipt> {
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
@@ -311,7 +389,7 @@ export class Hallmarq {
       if (error instanceof NotConfirmed) {
         throw error;
       }
-      throw await this.#resolveMinedFailure(error, contentHash, tx.hash);
+      throw await resolveMinedFailure(error);
     } finally {
       clearTimeout(timeoutHandle);
     }
@@ -322,20 +400,27 @@ export class Hallmarq {
    * decodable revert data (there's no `eth_call` response to parse one
    * from, only a receipt with `status: 0`), so {@link toHallmarqError}
    * alone can't tell a front-run apart from a genuine network failure. The
-   * most common cause — someone else's stamp for the same content got
-   * mined first, the front-running case `docs/SECURITY.md` names — is
-   * resolved here by reading the registry back, so the caller gets the
-   * specific, non-retryable {@link AlreadyStamped} instead of a
-   * {@link NetworkError} that looks worth retrying forever.
+   * most common cause — someone else's stamp (or batch root) for the same
+   * key got mined first, the front-running case `docs/SECURITY.md` names —
+   * is resolved here by reading the registry back via `lookupRegistrant`,
+   * so the caller gets the specific, non-retryable {@link AlreadyStamped}
+   * instead of a {@link NetworkError} that looks worth retrying forever.
+   * Shared by `stamp` (looks up by `contentHash` via `verify`) and the
+   * batch sender (looks up by `root` via `getBatch`).
    */
-  async #resolveMinedFailure(error: unknown, contentHash: Hex, txHash: string): Promise<Error> {
+  async #resolveMinedFailure(
+    error: unknown,
+    key: Hex,
+    txHash: string,
+    lookupRegistrant: (key: Hex) => Promise<string>,
+  ): Promise<Error> {
     if (isCallException(error)) {
       try {
-        const stamp = (await this.#readOnly.verify(contentHash)) as StampStruct;
-        if (stamp.registrant !== ZeroAddress) {
+        const registrant = await lookupRegistrant(key);
+        if (registrant !== ZeroAddress) {
           const signerAddress = await this.#signer!.getAddress();
-          if (stamp.registrant.toLowerCase() !== signerAddress.toLowerCase()) {
-            return new AlreadyStamped(contentHash, txHash);
+          if (registrant.toLowerCase() !== signerAddress.toLowerCase()) {
+            return new AlreadyStamped(key, txHash);
           }
         }
       } catch {
@@ -343,6 +428,14 @@ export class Hallmarq {
       }
     }
     return toHallmarqError(error);
+  }
+
+  async #lookupStampRegistrant(contentHash: Hex): Promise<string> {
+    return ((await this.#readOnly.verify(contentHash)) as StampStruct).registrant;
+  }
+
+  async #lookupBatchRegistrant(root: Hex): Promise<string> {
+    return ((await this.#readOnly.getBatch(root)) as BatchStruct).registrant;
   }
 
   /**
@@ -353,9 +446,9 @@ export class Hallmarq {
    * `AlreadyStamped`) is caught without spending gas. The transaction is
    * signed once; only its broadcast is retried, and only for a network
    * failure before any response was received (see
-   * {@link Hallmarq.#sendStampTransaction}). Once a transaction hash
-   * exists, this never resends — it either waits for confirmations or
-   * throws {@link NotConfirmed}.
+   * {@link Hallmarq.#signAndBroadcast}). Once a transaction hash exists,
+   * this never resends — it either waits for confirmations or throws
+   * {@link NotConfirmed}.
    */
   async stamp(content: string | Uint8Array, options: StampOptions): Promise<Receipt> {
     try {
@@ -390,7 +483,11 @@ export class Hallmarq {
         throw toHallmarqError(error);
       }
 
-      const receipt = await this.#waitForConfirmations(tx, contentHash);
+      const receipt = await this.#waitForConfirmations(tx, (error) =>
+        this.#resolveMinedFailure(error, contentHash, tx.hash, (hash) =>
+          this.#lookupStampRegistrant(hash),
+        ),
+      );
 
       return {
         contentHash,
@@ -506,5 +603,214 @@ export class Hallmarq {
       }
       throw toHallmarqError(error);
     }
+  }
+
+  /**
+   * Parses `receiptFile` with `parseReceiptFile` (from `@hallmarq/core`),
+   * checks it was issued for this instance's own `chainId` (when
+   * configured) and `registryAddress` — never silently checking a receipt
+   * against the wrong network or registry — then delegates to
+   * {@link Hallmarq.verifyInBatch}. Read-only; needs no signer.
+   */
+  async verifyReceipt(content: string | Uint8Array, receiptFile: unknown): Promise<VerifyResult> {
+    try {
+      const parsed = parseReceiptFile(receiptFile);
+
+      if (this.#chainId !== undefined && parsed.chainId !== this.#chainId) {
+        throw new ConfigError(
+          `Receipt file is for chain ${parsed.chainId}, but this Hallmarq instance is configured for chain ${this.#chainId}`,
+        );
+      }
+      if (parsed.registryAddress.toLowerCase() !== this.#registryAddress.toLowerCase()) {
+        throw new ConfigError(
+          `Receipt file is for registry ${parsed.registryAddress}, but this Hallmarq instance ` +
+            `is configured for ${this.#registryAddress}`,
+        );
+      }
+
+      return await this.verifyInBatch(content, { root: parsed.root, proof: parsed.proof });
+    } catch (error) {
+      if (error instanceof HallmarqError) {
+        throw error;
+      }
+      throw toHallmarqError(error);
+    }
+  }
+
+  /**
+   * Queues `content` into the open batch for `model` (one batch per model
+   * label, since `stampRoot` records a single label per root), creating it
+   * if none is open. The batch is sent once it reaches
+   * `batch.maxItems` (default 256), once `batch.maxWaitMs` (default
+   * 30000) has passed since its first item, or when {@link Hallmarq.flush}
+   * is called — whichever happens first. Once a batch starts sending it is
+   * closed: this never adds an item to a batch that's already in flight,
+   * even if that send hasn't resolved yet; a new item for the same model
+   * starts a fresh batch.
+   *
+   * Validates everything it can synchronously before this item ever joins
+   * a batch: `NoSigner`, `EmptyContent`, `ModelTooLong`, and — once
+   * {@link Hallmarq.close} has been called — `Closed`. Every item in a
+   * batch resolves or rejects together: a batch that confirms resolves
+   * every item's promise with its own {@link BatchReceipt}; a batch that
+   * fails (the preflight reverts, every retry is exhausted, confirmation
+   * times out, ...) rejects every item's promise with that same error.
+   */
+  async stampBatched(
+    content: string | Uint8Array,
+    options: StampBatchedOptions,
+  ): Promise<BatchReceipt> {
+    if (this.#closed) {
+      throw new Closed();
+    }
+    if (!this.#signerContract || !this.#signer) {
+      throw new NoSigner();
+    }
+    assertContentNotEmpty(content);
+    const contentHash = computeContentHash(content);
+    assertModelNotTooLong(options.model);
+    const model = options.model;
+
+    return new Promise<BatchReceipt>((resolve, reject) => {
+      let batch = this.#openBatches.get(model);
+      if (!batch) {
+        const newBatch: OpenBatch = { model, items: [], timer: undefined };
+        newBatch.timer = setTimeout(() => {
+          this.#openBatches.delete(model);
+          void this.#sendBatch(newBatch);
+        }, this.#batchMaxWaitMs);
+        newBatch.timer.unref?.();
+        this.#openBatches.set(model, newBatch);
+        batch = newBatch;
+      }
+
+      batch.items.push({ contentHash, resolve, reject });
+
+      if (batch.items.length >= this.#batchMaxItems) {
+        this.#openBatches.delete(model);
+        if (batch.timer) {
+          clearTimeout(batch.timer);
+        }
+        void this.#sendBatch(batch);
+      }
+    });
+  }
+
+  /**
+   * Builds the batch's Merkle tree, sends one `stampRoot` transaction
+   * through the same sign-once/retry/no-resend path `stamp` uses (see
+   * {@link Hallmarq.#signAndBroadcast}), and settles every item's promise.
+   * Never throws: any failure, at any stage, is delivered by rejecting
+   * every item in `batch` with the same error, so a caller driving many
+   * batches through {@link Hallmarq.flush} never needs to wrap each one in
+   * its own `try`/`catch`.
+   */
+  async #sendBatch(batch: OpenBatch): Promise<void> {
+    if (batch.timer) {
+      clearTimeout(batch.timer);
+    }
+    if (batch.items.length === 0) {
+      return;
+    }
+
+    let tree: MerkleTree;
+    try {
+      if (!this.#signerContract || !this.#signer) {
+        throw new NoSigner();
+      }
+
+      const contentHashes = batch.items.map((item) => item.contentHash);
+      tree = buildTree(contentHashes);
+      const root = tree.root;
+      const count = contentHashes.length;
+
+      await this.#ensureCorrectNetwork();
+      await this.#ensureContractExists();
+
+      try {
+        await this.#signerContract.stampRoot.staticCall(root, count, batch.model);
+      } catch (error) {
+        throw toHallmarqError(error);
+      }
+
+      let tx: TransactionResponse;
+      try {
+        tx = await this.#sendStampRootTransaction(root, count, batch.model);
+      } catch (error) {
+        if (error instanceof HallmarqError) {
+          throw error;
+        }
+        throw toHallmarqError(error);
+      }
+
+      const receipt = await this.#waitForConfirmations(tx, (error) =>
+        this.#resolveMinedFailure(error, root, tx.hash, (key) => this.#lookupBatchRegistrant(key)),
+      );
+
+      const registrant = await this.#signer.getAddress();
+      const chainId = await this.#resolveChainId();
+      const blockNumber = receipt.blockNumber;
+      const txHash = tx.hash;
+
+      batch.items.forEach((item, index) => {
+        const proof = getProof(tree, index);
+        const receiptFile: ReceiptFile = {
+          version: 1,
+          chainId,
+          registryAddress: this.#registryAddress,
+          contentHash: item.contentHash,
+          root,
+          proof,
+          model: batch.model,
+          txHash: txHash as Hex,
+          blockNumber,
+        };
+        item.resolve({
+          contentHash: item.contentHash,
+          txHash,
+          blockNumber,
+          registrant,
+          model: batch.model,
+          root,
+          proof,
+          batchSize: count,
+          index,
+          receiptFile,
+        });
+      });
+    } catch (error) {
+      const hallmarqError = error instanceof HallmarqError ? error : toHallmarqError(error);
+      for (const item of batch.items) {
+        item.reject(hallmarqError);
+      }
+    }
+  }
+
+  /**
+   * Sends every open batch now, regardless of `maxItems`/`maxWaitMs`, and
+   * resolves once all of them have settled. **Never rejects**: a batch
+   * that fails delivers its error through each of its items' own promises
+   * (see {@link Hallmarq.stampBatched}), not through `flush`'s — so a
+   * caller awaiting `flush()` only learns a batch failed by also awaiting
+   * (or otherwise observing) that batch's own item promises.
+   */
+  async flush(): Promise<void> {
+    const batches = [...this.#openBatches.values()];
+    this.#openBatches.clear();
+    await Promise.all(batches.map((batch) => this.#sendBatch(batch)));
+  }
+
+  /**
+   * Flushes every open batch, then permanently refuses new ones: any
+   * later {@link Hallmarq.stampBatched} call throws {@link Closed}. Also
+   * guarantees no batch timer is left running — {@link Hallmarq.flush}
+   * clears each one as it sends. `#closed` is set before the flush even
+   * starts, so a `stampBatched` call that arrives while `close()` is still
+   * flushing is refused immediately rather than slipping into a batch
+   * that's about to be (or already was) flushed without it.
+   */
+  async close(): Promise<void> {
+    this.#closed = true;
+    await this.flush();
   }
 }
