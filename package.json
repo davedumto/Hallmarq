@@ -16,7 +16,7 @@
     "test:hardhat": "hardhat test",
     "test:gas": "hardhat test --gas-stats",
     "report:size": "node tools/print-contract-size.mjs",
-    "lint": "pnpm --filter @hallmarq/core run build && eslint . && pnpm run lint:sol",
+    "lint": "pnpm --filter @hallmarq/core run build && pnpm --filter @hallmarq/sdk run build && eslint . && pnpm run lint:sol",
     "lint:sol": "node tools/lint-solidity.mjs",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
