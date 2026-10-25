@@ -16,6 +16,7 @@ export {
   InvalidMeta,
   ModelTooLong,
   NetworkError,
+  NonceOutOfSync,
   NoSigner,
   NotConfirmed,
   WrongNetwork,

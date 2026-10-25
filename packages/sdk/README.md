@@ -156,23 +156,24 @@ code: string`) and is safe to catch by class or by `.code`. A raw ethers or
 unknown error never escapes a public method — anything unrecognized is
 wrapped as `NetworkError`.
 
-| Class            | `code`            | Thrown by                         | Carries                            | When                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ---------------- | ----------------- | --------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `InvalidUtf8`    | `INVALID_UTF8`    | `stamp`, `stampBatched`, `verify` | —                                  | Byte content isn't valid UTF-8 and is hashed as text.                                                                                                                                                                                                                                                                                                                                                              |
-| `EmptyContent`   | `EMPTY_CONTENT`   | `stamp`, `stampBatched`           | —                                  | Normalized text is `""`, or bytes are empty. For `stampBatched`, checked before the item ever joins a batch.                                                                                                                                                                                                                                                                                                       |
-| `ModelTooLong`   | `MODEL_TOO_LONG`  | `stamp`, `stampBatched`           | —                                  | `model` is longer than 64 UTF-8 bytes. For `stampBatched`, checked before the item ever joins a batch.                                                                                                                                                                                                                                                                                                             |
-| `InvalidMeta`    | `INVALID_META`    | `stamp`                           | —                                  | `meta` (or something nested in it) can't be canonical JSON: `undefined`, a function, a `bigint`, `NaN`, `Infinity`/`-Infinity`, a circular reference, or an object that isn't a plain object or array (a `Date`, `Map`, `Set`, `RegExp`, a typed array, a class instance, ...).                                                                                                                                    |
-| `InvalidHex`     | `INVALID_HEX`     | `verifyInBatch`                   | —                                  | `root` or a `proof` element isn't 32-byte hex.                                                                                                                                                                                                                                                                                                                                                                     |
-| `InvalidReceipt` | `INVALID_RECEIPT` | `verifyReceipt`                   | —                                  | `receiptFile` isn't a well-formed `ReceiptFile` (from `@hallmarq/core`'s `parseReceiptFile`); names the offending field.                                                                                                                                                                                                                                                                                           |
-| `AlreadyStamped` | `ALREADY_STAMPED` | `stamp`, `stampBatched`           | `contentHash`, `txHash?`           | The registry already has this content hash (`stamp`) or Merkle root (`stampBatched`) registered. Usually caught by the preflight (`txHash` unset: no transaction was ever sent for this call); occasionally a transaction is mined and reverts because someone else's stamp (or batch root) landed first — `txHash` is set in that case. For `stampBatched`, every item in the batch rejects with this same error. |
-| `NotConfirmed`   | `NOT_CONFIRMED`   | `stamp`, `stampBatched`           | `txHash`                           | A transaction was sent (so it has a hash and is never resent) but didn't reach `confirmations` within `confirmTimeoutMs`; or every broadcast retry exhausted on a transport error, leaving the transaction's fate unknown. For `stampBatched`, every item in the batch rejects with this same error.                                                                                                               |
-| `NetworkError`   | `NETWORK_ERROR`   | any method                        | `cause`                            | Sending or reading failed for a reason that isn't one of the above — including an exhausted retry and any unrecognized contract revert.                                                                                                                                                                                                                                                                            |
-| `NoSigner`       | `NO_SIGNER`       | `stamp`, `stampBatched`           | —                                  | Called without a configured `signer`.                                                                                                                                                                                                                                                                                                                                                                              |
-| `Closed`         | `CLOSED`          | `stampBatched`                    | —                                  | `close()` was already called on this instance; no new batched stamps can be queued.                                                                                                                                                                                                                                                                                                                                |
-| `ConfigError`    | `CONFIG_ERROR`    | constructor, any method           | —                                  | `rpcUrl` or `registryAddress` resolves to nothing (at construction, not on first use); there's no contract code at `registryAddress` (checked once, on first use of any method); `batch.maxItems`/`batch.maxWaitMs` is out of range (at construction); or (`verifyReceipt` only) the receipt's `chainId`/`registryAddress` doesn't match this instance's own.                                                      |
-| `WrongNetwork`   | `WRONG_NETWORK`   | any method                        | `expectedChainId`, `actualChainId` | The provider's actual chain ID doesn't match the configured one. Checked once, before the first use of any method; never sent to the wrong chain.                                                                                                                                                                                                                                                                  |
+| Class            | `code`              | Thrown by                         | Carries                            | When                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------- | ------------------- | --------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `InvalidUtf8`    | `INVALID_UTF8`      | `stamp`, `stampBatched`, `verify` | —                                  | Byte content isn't valid UTF-8 and is hashed as text.                                                                                                                                                                                                                                                                                                                                                              |
+| `EmptyContent`   | `EMPTY_CONTENT`     | `stamp`, `stampBatched`           | —                                  | Normalized text is `""`, or bytes are empty. For `stampBatched`, checked before the item ever joins a batch.                                                                                                                                                                                                                                                                                                       |
+| `ModelTooLong`   | `MODEL_TOO_LONG`    | `stamp`, `stampBatched`           | —                                  | `model` is longer than 64 UTF-8 bytes. For `stampBatched`, checked before the item ever joins a batch.                                                                                                                                                                                                                                                                                                             |
+| `InvalidMeta`    | `INVALID_META`      | `stamp`                           | —                                  | `meta` (or something nested in it) can't be canonical JSON: `undefined`, a function, a `bigint`, `NaN`, `Infinity`/`-Infinity`, a circular reference, or an object that isn't a plain object or array (a `Date`, `Map`, `Set`, `RegExp`, a typed array, a class instance, ...).                                                                                                                                    |
+| `InvalidHex`     | `INVALID_HEX`       | `verifyInBatch`                   | —                                  | `root` or a `proof` element isn't 32-byte hex.                                                                                                                                                                                                                                                                                                                                                                     |
+| `InvalidReceipt` | `INVALID_RECEIPT`   | `verifyReceipt`                   | —                                  | `receiptFile` isn't a well-formed `ReceiptFile` (from `@hallmarq/core`'s `parseReceiptFile`); names the offending field.                                                                                                                                                                                                                                                                                           |
+| `AlreadyStamped` | `ALREADY_STAMPED`   | `stamp`, `stampBatched`           | `contentHash`, `txHash?`           | The registry already has this content hash (`stamp`) or Merkle root (`stampBatched`) registered. Usually caught by the preflight (`txHash` unset: no transaction was ever sent for this call); occasionally a transaction is mined and reverts because someone else's stamp (or batch root) landed first — `txHash` is set in that case. For `stampBatched`, every item in the batch rejects with this same error. |
+| `NotConfirmed`   | `NOT_CONFIRMED`     | `stamp`, `stampBatched`           | `txHash`                           | A transaction was sent (so it has a hash and is never resent) but didn't reach `confirmations` within `confirmTimeoutMs`; or every broadcast retry exhausted on a transport error, leaving the transaction's fate unknown. For `stampBatched`, every item in the batch rejects with this same error.                                                                                                               |
+| `NetworkError`   | `NETWORK_ERROR`     | any method                        | `cause`                            | Sending or reading failed for a reason that isn't one of the above — including an exhausted retry and any unrecognized contract revert.                                                                                                                                                                                                                                                                            |
+| `NonceOutOfSync` | `NONCE_OUT_OF_SYNC` | `stamp`, `stampBatched`           | `nonce`, `cause`                   | The node rejected the nonce this instance assigned (`NONCE_EXPIRED`/"nonce too low") and it wasn't simply this same transaction already landing. This instance's nonce tracking is reset; the _next_ send re-reads the node's own count, but this one is never auto-resigned and resent. See "Retries/nonces" below.                                                                                               |
+| `NoSigner`       | `NO_SIGNER`         | `stamp`, `stampBatched`           | —                                  | Called without a configured `signer`.                                                                                                                                                                                                                                                                                                                                                                              |
+| `Closed`         | `CLOSED`            | `stampBatched`                    | —                                  | `close()` was already called on this instance; no new batched stamps can be queued.                                                                                                                                                                                                                                                                                                                                |
+| `ConfigError`    | `CONFIG_ERROR`      | constructor, any method           | —                                  | `rpcUrl` or `registryAddress` resolves to nothing (at construction, not on first use); there's no contract code at `registryAddress` (checked once, on first use of any method); `batch.maxItems`/`batch.maxWaitMs` is out of range (at construction); or (`verifyReceipt` only) the receipt's `chainId`/`registryAddress` doesn't match this instance's own.                                                      |
+| `WrongNetwork`   | `WRONG_NETWORK`     | any method                        | `expectedChainId`, `actualChainId` | The provider's actual chain ID doesn't match the configured one. Checked once, before the first use of any method; never sent to the wrong chain.                                                                                                                                                                                                                                                                  |
 
-## Retries
+## Retries/nonces
 
 `stamp` (and a batch's own `stampRoot` send, triggered by `stampBatched`;
 see "Batching" below — both go through the exact same code) sign their
@@ -219,6 +220,39 @@ and the user paying gas for a doomed second one.
   the same content landed first, `stamp` resolves it to `AlreadyStamped`
   (with `txHash` set) rather than a generic `NetworkError`.
 
+**Nonce tracking.** Each `Hallmarq` instance assigns the nonce for its own
+sends itself — `max(the node's own "pending" count, this instance's own
+next-nonce counter)` — rather than trusting the node's "pending" count
+alone. This matters because not every node's "pending" count actually
+includes a transaction this instance has already broadcast but that hasn't
+been mined yet: MST's testnet node was observed answering the same
+"pending" count after a transaction was sent as before it, effectively
+behaving like "latest". Two sends relying solely on that count would both
+get assigned the same nonce, and the second would be rejected
+(`REPLACEMENT_UNDERPRICED` or similar) even though nothing was actually
+wrong. Tracking the next nonce locally, per instance, means two sends from
+the _same_ `Hallmarq` instance never collide regardless of what the node's
+"pending" count says.
+
+This local tracking only covers one instance, though. **Two separate
+`Hallmarq` instances — or any other software — sending from the same key at
+the same time can still collide**, since neither one knows about the
+other's in-flight transactions. If the node's "pending" count is accurate,
+the collision mostly self-resolves (each side's own bookkeeping converges
+on the node's real count); if it isn't (as on MST), it won't. The
+recommended shape is **one `Hallmarq` instance per key** for the lifetime of
+that key's use — don't construct a second instance (or run a second
+process) signing from the same private key concurrently.
+
+If the node ever does reject an assigned nonce outright — not simply this
+exact transaction already having landed — `stamp`/`stampBatched` throw
+`NonceOutOfSync` for that one send and reset this instance's tracking, so
+the _next_ send re-reads the node's "pending" count from scratch rather
+than compounding the error. The failed send is never silently resigned
+with a new nonce and resent: that would be a second, independently-signed
+transaction for the same content, which the no-resend rule above forbids
+just as much here.
+
 ## Batching
 
 `stampRoot` records a Merkle root over many content hashes in one
@@ -257,16 +291,38 @@ const receipts = await Promise.all(
 );
 ```
 
+**Attach handlers to every `stampBatched` promise _before_ calling
+`flush()` (or `close()`), never after.** `flush()` can settle a batch's
+items — including rejecting them — as early as the very next tick, so
+constructing `Promise.all`/`Promise.allSettled` only after `await
+hallmarq.flush()` leaves a window where a rejected item promise has no
+`.catch`/`.then` attached to it yet. Node reports that as an unhandled
+promise rejection (and, depending on configuration, can crash the
+process) even though the code goes on to `await` that same promise
+moments later — the handler just wasn't attached in time.
+
+```ts
+const pending = replies.map((reply) => hallmarq.stampBatched(reply, { model: "gpt-4o" }));
+// Start observing every item's promise now, synchronously — before flush()
+// gets any chance to settle one.
+const settled = Promise.allSettled(pending);
+await hallmarq.flush();
+const results = await settled;
+```
+
 **`flush()` and `close()`.** Call `flush()` to send every open batch right
 now rather than waiting out `maxWaitMs` — useful before your process exits,
 or whenever you need the in-flight items to go out immediately. `flush()`
 **never rejects**: a batch's failure is only ever visible through that
 batch's own items' promises, so always wait on (or otherwise observe) the
 `stampBatched` promises themselves, not just `flush()`, to learn whether a
-batch actually succeeded. `close()` does the same, then refuses any further
-`stampBatched` call (throwing `Closed`) and guarantees every batch timer is
-cleared — call it once, when you're done with an instance for good, so
-nothing is left that could keep a Node process alive.
+batch actually succeeded — and attach that observation (`Promise.all`,
+`Promise.allSettled`, or your own `.catch`) **before** calling `flush()`,
+per the unhandled-rejection trap described above. `close()` does the same,
+then refuses any further `stampBatched` call (throwing `Closed`) and
+guarantees every batch timer is cleared — call it once, when you're done
+with an instance for good, so nothing is left that could keep a Node
+process alive.
 
 ```ts
 process.on("beforeExit", () => void hallmarq.close());

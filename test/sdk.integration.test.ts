@@ -462,6 +462,37 @@ describe("SDK integration (Hallmarq against a real deployed StampRegistry)", () 
     );
   }
 
+  /**
+   * Wraps a real provider so `getTransactionCount(address, "pending")`
+   * answers with the "latest" (mined-only) count instead — exactly what
+   * MST's testnet node was observed doing (docs/DECISIONS.md and the
+   * README's "Retries/nonces" section): it never reflects a transaction
+   * this signer has already broadcast but that hasn't been mined yet.
+   * Every other method is forwarded to the real provider, each explicitly
+   * bound to it so ethers' own internals (which rely on private class
+   * fields) still see their real `this`, not this wrapper.
+   */
+  function withStalePendingNonce<T extends object>(real: T): T {
+    return new Proxy(real, {
+      get(target, prop, receiver) {
+        if (prop === "getTransactionCount") {
+          const original = (
+            target as unknown as {
+              getTransactionCount: (address: string, blockTag?: string) => Promise<number>;
+            }
+          ).getTransactionCount.bind(target);
+          return (address: string, blockTag?: string) =>
+            original(address, blockTag === "pending" ? "latest" : blockTag);
+        }
+        const value: unknown = Reflect.get(target, prop, receiver);
+        if (typeof value === "function") {
+          return (value as (...args: unknown[]) => unknown).bind(target);
+        }
+        return value;
+      },
+    });
+  }
+
   it("flush() sends concurrent stampRoot transactions for 3 models from one signer with consecutive nonces, not a nonce collision", async () => {
     const { registryAddress, chainId, deploymentBlock } = await deploy();
     const signer = lockTestSigner();
@@ -560,5 +591,50 @@ describe("SDK integration (Hallmarq against a real deployed StampRegistry)", () 
       model: "gpt-4o",
     });
     expect(third.txHash).to.be.a("string");
+  });
+
+  it("flush() across 3 models all succeed even when the node's 'pending' count only reports 'latest' (mimics MST)", async () => {
+    const { registryAddress, chainId, deploymentBlock } = await deploy();
+    const signer = lockTestSigner().connect(withStalePendingNonce(ethers.provider));
+    const hallmarq = makeHallmarq({ registryAddress, chainId, deploymentBlock, signer });
+
+    await ethers.provider.send("evm_setAutomine", [false]);
+    try {
+      const nonceBefore = await ethers.provider.getTransactionCount(
+        await signer.getAddress(),
+        "pending",
+      );
+
+      const pending = [
+        hallmarq.stampBatched("integration: stale-pending model-a item", { model: "model-a" }),
+        hallmarq.stampBatched("integration: stale-pending model-b item", { model: "model-b" }),
+        hallmarq.stampBatched("integration: stale-pending model-c item", { model: "model-c" }),
+      ];
+      const flushed = hallmarq.flush();
+
+      // Wait until all three transactions have actually reached the
+      // mempool — still unmined, so the real provider's own "pending"
+      // count (not the wrapper's "latest" one) must have advanced by 3 —
+      // before mining, rather than racing them with a fixed delay.
+      while (
+        (await ethers.provider.getTransactionCount(await signer.getAddress(), "pending")) <
+        nonceBefore + 3
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      // One block mines all three.
+      await ethers.provider.send("evm_mine", []);
+      await flushed;
+
+      const receipts = await Promise.all(pending);
+      expect(receipts).to.have.lengthOf(3);
+      const nonces = await Promise.all(
+        receipts.map(async (r) => (await ethers.provider.getTransaction(r.txHash))!.nonce),
+      );
+      expect(new Set(nonces).size).to.equal(3);
+    } finally {
+      await ethers.provider.send("evm_setAutomine", [true]);
+    }
   });
 });

@@ -14,6 +14,7 @@ import {
   InvalidMeta,
   ModelTooLong,
   NetworkError,
+  NonceOutOfSync,
   NoSigner,
   NotConfirmed,
   WrongNetwork,
@@ -98,6 +99,7 @@ interface FakeProvider {
   getCode: Mock;
   broadcastTransaction: Mock;
   getTransaction: Mock;
+  getTransactionCount: Mock;
 }
 
 function makeFakeProvider(chainId = CHAIN_ID): FakeProvider {
@@ -108,6 +110,10 @@ function makeFakeProvider(chainId = CHAIN_ID): FakeProvider {
     getCode: vi.fn().mockResolvedValue("0x1234"),
     broadcastTransaction: vi.fn(),
     getTransaction: vi.fn(),
+    // The node's own "pending" count. Defaults to 0 so every test that
+    // doesn't care about nonces still gets a well-formed one; tests for
+    // nonce tracking itself override this.
+    getTransactionCount: vi.fn().mockResolvedValue(0),
   };
 }
 
@@ -700,6 +706,84 @@ describe("Hallmarq send lock (concurrent sends on one instance never race for a 
     const [firstError, secondReceipt] = await Promise.all([first, second]);
     expect(firstError).toBeInstanceOf(ModelTooLong);
     expect(secondReceipt.txHash).toBe("0xtx2");
+  });
+});
+
+describe("Hallmarq nonce tracking (local nonce survives a stale 'pending' count)", () => {
+  function makeHallmarq(signer: unknown) {
+    return new Hallmarq({
+      rpcUrl: RPC_URL,
+      registryAddress: REGISTRY_ADDRESS,
+      chainId: CHAIN_ID,
+      signer: signer as never,
+    });
+  }
+
+  function successfulTx(hash: string, blockNumber: number) {
+    return { hash, wait: vi.fn().mockResolvedValue({ blockNumber }) };
+  }
+
+  function nonceOfCall(signer: unknown, callIndex: number): unknown {
+    const populateMock = (signer as { populateTransaction: Mock }).populateTransaction;
+    return (populateMock.mock.calls[callIndex][0] as { nonce: unknown }).nonce;
+  }
+
+  it("three serialized sends get nonces N, N+1, N+2 even when the node's 'pending' count never advances", async () => {
+    const provider = makeFakeProvider();
+    // Stale on purpose: a real "pending" count would be 5, 6, 7 as each
+    // send lands, but this mock always answers 5 — exactly what MST's
+    // testnet node was observed doing (see the README's "Retries/nonces"
+    // section). Local #nextNonce tracking must compensate on its own.
+    provider.getTransactionCount.mockResolvedValue(5);
+    provider.broadcastTransaction
+      .mockResolvedValueOnce(successfulTx("0xtx0", 1))
+      .mockResolvedValueOnce(successfulTx("0xtx1", 1))
+      .mockResolvedValueOnce(successfulTx("0xtx2", 1));
+    const signer = makeFakeSigner(provider);
+    const hallmarq = makeHallmarq(signer);
+
+    await Promise.all([
+      hallmarq.stamp("one", { model: "gpt-4o" }),
+      hallmarq.stamp("two", { model: "gpt-4o" }),
+      hallmarq.stamp("three", { model: "gpt-4o" }),
+    ]);
+
+    expect([nonceOfCall(signer, 0), nonceOfCall(signer, 1), nonceOfCall(signer, 2)]).toEqual([
+      5, 6, 7,
+    ]);
+  });
+
+  it("resyncs after a nonce-too-low rejection: the failed send throws NonceOutOfSync, and the next send re-reads 'pending' from scratch", async () => {
+    const provider = makeFakeProvider();
+    provider.getTransactionCount.mockResolvedValueOnce(5).mockResolvedValueOnce(9);
+    provider.broadcastTransaction
+      .mockRejectedValueOnce(Object.assign(new Error("nonce too low"), { code: "NONCE_EXPIRED" }))
+      .mockResolvedValueOnce(successfulTx("0xtx1", 1));
+    // Not simply this same transaction already broadcast: the lookup by
+    // this attempt's own hash finds nothing.
+    provider.getTransaction.mockResolvedValue(null);
+    const signer = makeFakeSigner(provider);
+    const hallmarq = makeHallmarq(signer);
+
+    let error: unknown;
+    try {
+      await hallmarq.stamp("one", { model: "gpt-4o" });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(NonceOutOfSync);
+    expect((error as NonceOutOfSync).nonce).toBe(5);
+
+    // No auto-resign-and-resend for the failed send: broadcastTransaction
+    // was only ever called once for it.
+    expect(provider.broadcastTransaction).toHaveBeenCalledTimes(1);
+
+    const receipt = await hallmarq.stamp("two", { model: "gpt-4o" });
+    expect(receipt.txHash).toBe("0xtx1");
+
+    // The second send used the node's fresh "pending" count (9), not a
+    // blind increment of the rejected nonce (which would have been 6).
+    expect(nonceOfCall(signer, 1)).toBe(9);
   });
 });
 
