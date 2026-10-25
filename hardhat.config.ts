@@ -7,9 +7,9 @@ import type { HardhatUserConfig } from "hardhat/config";
 // and the 3,030-byte contract size were measured on paris (docs/DECISIONS.md D5).
 const SOLIDITY_VERSION = "0.8.26";
 
-// MST testnet's chain ID (docs/DECISIONS.md D13). hardhat-verify needs this to
-// find the Blockscout explorer below; it isn't read from MST_CHAIN_ID because
-// chainDescriptors must exist even when no testnet credentials are configured.
+// MST testnet's chain ID (docs/DECISIONS.md D13), used as the chainDescriptors
+// key below. Not read from MST_CHAIN_ID: chainDescriptors must exist even when
+// no testnet credentials are configured.
 const MST_TESTNET_CHAIN_ID = 91562037;
 
 type NetworksUserConfig = NonNullable<HardhatUserConfig["networks"]>;
@@ -39,8 +39,9 @@ if (MST_RPC_URL && MST_CHAIN_ID && DEPLOYER_PRIVATE_KEY) {
 
 const config: HardhatUserConfig = {
   // hardhat-toolbox-mocha-ethers already depends on @nomicfoundation/hardhat-verify,
-  // so it doesn't need to be listed again here; it's a direct devDependency only so
-  // scripts/verify.ts can import verifyContract from it.
+  // so it isn't listed again here, nor as a direct devDependency: it only
+  // implements Blockscout's legacy v1 API, which can't verify this contract
+  // (see scripts/verify.ts, which talks to Blockscout's v2 API directly).
   plugins: [hardhatToolboxMochaEthersPlugin],
   solidity: {
     profiles: {
