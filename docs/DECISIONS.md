@@ -49,11 +49,10 @@ document. The contract stays as specified: it only rejects the zero hash.
 
 ## D5. Compiler and EVM target
 
-`solc 0.8.26`, optimizer at 200 runs, **`evmVersion: "paris"`** until we confirm
-which hardfork MST supports. MST is a Parlia (BSC-family) chain. Shanghai's
-`PUSH0` (the solc default since 0.8.20) may not be live there, and it would make
-the deploy fail. Once MST is confirmed to support it, we bump to `shanghai`/`cancun`
-in its own PR.
+`solc 0.8.26`, optimizer at 200 runs, **`evmVersion: "paris"`**. MST supports up
+to Cancun (D13); we deliberately stay on paris for v1 because every test, gas
+figure and the 3,030-byte size were measured on paris; moving to
+shanghai/cancun is optional future work.
 
 ## D6. Hardhat 3 + ethers v6 + mocha; fast-check for property tests
 
@@ -137,3 +136,33 @@ backward-compatible:
   so a caller shutting down (a server process exiting, a test suite
   finishing) has one call that guarantees no batch is left stranded and no
   timer keeps the process alive.
+
+## D13. MST testnet facts
+
+Checked by the CTO against the live chain on 2026-10-25, closing the "Open
+items" in `docs/ROADMAP.md` that this PR needed. Every value below is used
+exactly as given here; none of it is guessed or re-derived.
+
+- **Chain ID** `91562037` (`0x5752035`). **RPC** `https://testnetrpc.mstblockchain.com`.
+  **Explorer** `https://testnet.mstscan.com`. Checked by calling `eth_chainId`
+  against the RPC and comparing it to the explorer's own reported chain ID.
+- **Native coin** tMSTC, 18 decimals. Checked via a balance query against the
+  funded deployer wallet (below) and the explorer's unit display.
+- **Gas**: gas price 1 gwei, base fee 0, block gas limit 55,000,000, block
+  time about 3.0s. Checked by reading recent blocks over `eth_getBlockByNumber`.
+- **EVM**: supports up to Cancun. `PUSH0`, `TSTORE` and `MCOPY` were each
+  confirmed live with a one-off `eth_call` probe (a tiny bytecode snippet
+  using just that opcode, called against an arbitrary address); Osaka is
+  **not** supported. This is strictly ahead of D5's `paris` target, so paris
+  stays correct; see D5 for why we don't move up yet.
+- **Explorer**: Blockscout v9.0.2. Source verification is enabled; solc
+  `v0.8.26+commit.8a97fa7a` is available and standard-input (JSON) upload
+  verification is supported. The verification API is Etherscan-compatible,
+  at `https://testnet.mstscan.com/api`. Checked by reading the explorer's own
+  version/about page and its API docs.
+- **`eth_getLogs`** works over the full chain range (no block-range cap was
+  hit querying from genesis). Checked by querying the full range directly.
+- **Deployer wallet**: `0xE5439B81cab5813226AD3be0EA5de2aceFB3f750`, funded
+  with 50 tMSTC from the faucet. This is the "fresh deployer wallet" open
+  item from `docs/ROADMAP.md`; its key lives only in the `testnet` GitHub
+  environment's `DEPLOYER_PRIVATE_KEY` secret, never in this repository.

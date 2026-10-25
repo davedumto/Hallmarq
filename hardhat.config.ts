@@ -3,9 +3,14 @@ import "dotenv/config";
 import hardhatToolboxMochaEthersPlugin from "@nomicfoundation/hardhat-toolbox-mocha-ethers";
 import type { HardhatUserConfig } from "hardhat/config";
 
-// MST is a Parlia (BSC-family) chain; evmVersion is pinned to "paris" until the
-// supported hardfork is confirmed (docs/DECISIONS.md D5).
+// MST supports up to Cancun, but v1 stays on "paris": every test, gas figure
+// and the 3,030-byte contract size were measured on paris (docs/DECISIONS.md D5).
 const SOLIDITY_VERSION = "0.8.26";
+
+// MST testnet's chain ID (docs/DECISIONS.md D13). hardhat-verify needs this to
+// find the Blockscout explorer below; it isn't read from MST_CHAIN_ID because
+// chainDescriptors must exist even when no testnet credentials are configured.
+const MST_TESTNET_CHAIN_ID = 91562037;
 
 type NetworksUserConfig = NonNullable<HardhatUserConfig["networks"]>;
 
@@ -33,6 +38,9 @@ if (MST_RPC_URL && MST_CHAIN_ID && DEPLOYER_PRIVATE_KEY) {
 }
 
 const config: HardhatUserConfig = {
+  // hardhat-toolbox-mocha-ethers already depends on @nomicfoundation/hardhat-verify,
+  // so it doesn't need to be listed again here; it's a direct devDependency only so
+  // scripts/verify.ts can import verifyContract from it.
   plugins: [hardhatToolboxMochaEthersPlugin],
   solidity: {
     profiles: {
@@ -49,6 +57,21 @@ const config: HardhatUserConfig = {
     },
   },
   networks,
+  // Blockscout verification config for MST testnet (docs/DECISIONS.md D13).
+  // Blockscout v9.0.2 at testnet.mstscan.com needs no API key.
+  chainDescriptors: {
+    [MST_TESTNET_CHAIN_ID]: {
+      name: "MST Testnet",
+      chainType: "l1",
+      blockExplorers: {
+        blockscout: {
+          name: "MST Testnet Explorer",
+          url: "https://testnet.mstscan.com",
+          apiUrl: "https://testnet.mstscan.com/api",
+        },
+      },
+    },
+  },
 };
 
 export default config;

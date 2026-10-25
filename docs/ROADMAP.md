@@ -28,10 +28,10 @@ Read before any PR: `docs/Hallmarq_Technical_Documentation.pdf` (the spec) and
 
 These aren't engineering tasks. The engineer must not guess these values.
 
-- [ ] MST testnet chain ID, public RPC URL, faucet
+- [x] MST testnet chain ID, public RPC URL, faucet (see `docs/DECISIONS.md` D13)
 - [ ] MST mainnet chain ID and RPC URL
-- [ ] Supported EVM hardfork (does `PUSH0` work? see D5)
-- [ ] Blockscout verification on testnet.mstscan.com: is it enabled, and what's the API URL?
+- [x] Supported EVM hardfork (does `PUSH0` work? see D5) — up to Cancun; D13
+- [x] Blockscout verification on testnet.mstscan.com: is it enabled, and what's the API URL? — see D13
 - [ ] A fresh deployer wallet funded from the faucet; its key lives only in `.env` / CI secrets
 - [ ] SARAL / WASMify / grant terms: not needed for v1
 
