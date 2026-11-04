@@ -13,21 +13,24 @@ verifier page.
 - Build plan and PR prompts: [`docs/ROADMAP.md`](docs/ROADMAP.md)
 - How to contribute and what review checks: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
-Status: monorepo scaffold and CI in place (Roadmap PR 1). No product code yet —
-`StampRegistry`, `@hallmarq/core`, `@hallmarq/sdk` and `@hallmarq/verifier` land
-in PRs 2, 3, 6/7 and 8.
+Status: `StampRegistry`, `@hallmarq/core` and `@hallmarq/sdk` (single and batched
+stamping) are built and tested, and `StampRegistry` is deployed on MST testnet at
+`0xce6803cb3027ec299E4FB9660c46547216955dF6`. Source verification on the explorer
+is pending a fix on MST's side (see `docs/DECISIONS.md` D14). The verifier page
+(`@hallmarq/verifier`) is next.
 
 ## Layout
 
 ```
 hallmarq/
-  contracts/            StampRegistry.sol (PR 3)
-  test/                 Hardhat tests (unit, property, cross-check)
-  scripts/               deploy.ts, measure-gas.ts, e2e.ts (PR 5, PR 9)
-  packages/core/         @hallmarq/core: normalize, hash, Merkle (no chain code)
-  packages/sdk/          @hallmarq/sdk: Hallmarq class (depends on core + ethers)
-  packages/verifier/     @hallmarq/verifier: static page (depends on core + ethers)
-  vectors/               shared test vectors (PR 2)
+  contracts/            StampRegistry.sol
+  test/                 Hardhat tests (unit, property, cross-check, SDK integration)
+  scripts/              deploy.ts, verify.ts, smoke.ts (MST testnet tooling)
+  tools/                ABI export, Solidity lint and contract-size helpers
+  packages/core/        @hallmarq/core: normalize, hash, Merkle, receipt files
+  packages/sdk/         @hallmarq/sdk: Hallmarq class (depends on core + ethers)
+  packages/verifier/    @hallmarq/verifier: static page (depends on core + ethers)
+  vectors/              shared test vectors
   docs/
   hardhat.config.ts
 ```
