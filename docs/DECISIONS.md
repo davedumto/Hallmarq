@@ -216,3 +216,15 @@ after this PR — but it is unused going forward. No data depends on it: its
 else. The next `deploy` run (Roadmap item 5b) produces a fresh 0.8.28
 deployment at a new address; `deployments/mstTestnet.json` isn't committed,
 so that deploy needs no `--force`.
+
+**Correction: the compiler version was not the cause.** The 0.8.28
+deployment at `0xce6803cb3027ec299E4FB9660c46547216955dF6` (block 6559352)
+fails verification the same way. The explorer's stored creation and deployed
+bytecode match our local compile byte for byte, and every submission is
+accepted and then answered "Fail - Unable to verify": the exact build-info
+standard input, the same input with the plain `contracts/StampRegistry.sol`
+path, a flattened single file, and the v1 Etherscan-compatible API. The
+"0 of 713" figure was a correlation (0.8.25/0.8.26 are rarely used on MST),
+not a diagnosis. The fault is most likely MST's verification service itself;
+only MST can fix it, and `scripts/verify.ts` is re-run once they do. Staying on 0.8.28 costs nothing: the bytecode body is identical, so every
+test, gas figure and the 3,030-byte size still hold.
