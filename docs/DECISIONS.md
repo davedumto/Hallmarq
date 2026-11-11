@@ -86,8 +86,10 @@ the published hash was computed from.
 
 The CTO recomputed every hash in the spec with ethers v6 `keccak256` before
 work began. The two text vectors, the raw (unnormalized) hash, and every value in
-the A/B/C Merkle example match the spec exactly. The step that's still open is
-running these values against the contract, which is PR 4.
+the A/B/C Merkle example match the spec exactly. Running these values against
+the contract itself was closed by PR 4: `test/crosscheck.test.ts` stamps the
+published A/B/C root and the single-item batch, accepts the published proofs
+exactly as written in `vectors/vectors.json`, and rejects tampered ones.
 
 ## D11. Two SDK additions beyond the spec (PR 6)
 
