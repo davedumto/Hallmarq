@@ -32,7 +32,7 @@ These aren't engineering tasks. The engineer must not guess these values.
 - [ ] MST mainnet chain ID and RPC URL
 - [x] Supported EVM hardfork (does `PUSH0` work? see D5) — up to Cancun; D13
 - [x] Blockscout verification on testnet.mstscan.com: is it enabled, and what's the API URL? — see D13
-- [ ] A fresh deployer wallet funded from the faucet; its key lives only in `.env` / CI secrets
+- [x] A fresh deployer wallet funded from the faucet; its key lives only in `.env` / CI secrets — `0xE5439B81cab5813226AD3be0EA5de2aceFB3f750`, key in the `DEPLOYER_PRIVATE_KEY` GitHub secret (D13)
 - [ ] SARAL / WASMify / grant terms: not needed for v1
 
 ---
