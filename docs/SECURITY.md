@@ -56,3 +56,24 @@ StampRegistry.verifyInBatch(bytes32,bytes32,bytes32[]) (contracts/StampRegistry.
 Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
 INFO:Slither:. analyzed (1 contracts with 102 detectors), 3 result(s) found
 ```
+
+## Deployment key handling
+
+The private key for the testnet deployer wallet
+(`0xE5439B81cab5813226AD3be0EA5de2aceFB3f750`) exists only as the `DEPLOYER_PRIVATE_KEY` GitHub Actions secret. It is never in the
+repository, a local `.env` that gets committed, or anyone's chat or notes.
+
+- Deploys run only through `.github/workflows/deploy-testnet.yml`, which has a
+  manual trigger and nothing else, and is started by the founder.
+- The key is passed only to the steps that sign transactions (`deploy.ts` and
+  `smoke.ts`). It is deliberately not a job-wide variable, so dependency install
+  scripts and the build never see it. `verify.ts` signs nothing and gets a
+  dummy placeholder instead.
+- Workflow inputs (contract address, deployment block) reach the shell through
+  environment variables and are format-checked, never pasted into the script,
+  so they can't inject commands.
+- The script steps run with `pipefail`, so a failed deploy or smoke test fails
+  the run instead of showing green, and the run fails if its log ever contains the
+  string `PRIVATE`.
+- The wallet holds only free testnet coins. A mainnet deployment gets its own
+  new wallet; this one is never reused for real funds.
