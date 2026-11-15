@@ -62,6 +62,15 @@ If the code changes during review, update the description to match before merge.
 - Shared vectors (`vectors/vectors.json`) still pass in every package.
 - Never skip or disable a test to get green.
 
+## Testnet deployments
+
+- Only the founder deploys, by running the `deploy-testnet` workflow from the Actions
+  tab (`deploy`, then `verify`, then `smoke`). Never deploy from a local machine.
+- Never ask for, paste or log the deployer key. It lives only in the
+  `DEPLOYER_PRIVATE_KEY` GitHub secret (see `docs/SECURITY.md`).
+- A new deployment gets its own PR that commits `deployments/mstTestnet.json` from the
+  workflow artifact unchanged and updates `packages/core/src/networks.ts`.
+
 ## Merge rule
 
 CI is green and the CTO has approved, then squash-merge into `dev`. Release PRs
