@@ -54,8 +54,9 @@ to Cancun (D13); we deliberately stay on paris for v1 because every test, gas
 figure and the 3,030-byte size were measured on paris; moving to
 shanghai/cancun is optional future work.
 
-Originally `0.8.26`; switched to `0.8.28` to make the deployed contract
-source-verifiable on MST's Blockscout explorer — see D14 for why.
+Originally `0.8.26`; switched to `0.8.28` while chasing a source-verification
+failure on MST's explorer. That turned out not to be the cause (see D14's
+correction); 0.8.28 stays because the bytecode body is identical either way.
 
 ## D6. Hardhat 3 + ethers v6 + mocha; fast-check for property tests
 
@@ -162,10 +163,9 @@ exactly as given here; none of it is guessed or re-derived.
   stays correct; see D5 for why we don't move up yet.
 - **Explorer**: Blockscout v9.0.2. Source verification is enabled; solc
   `v0.8.26+commit.8a97fa7a` is listed as available and standard-input (JSON)
-  upload verification is supported. **Correction (D14): listed does not mean
-  working.** 0.8.26 (and 0.8.25) verify 0 of 713 contracts on this explorer in
-  practice; neighbouring versions verify routinely. Use solc 0.8.28 (D5), not
-  0.8.26, for anything that needs to verify here. The verification API is
+  upload verification is supported. Verification of our contract fails on
+  both 0.8.26 and 0.8.28 with "Fail - Unable to verify", most likely a fault
+  in MST's verifier service; see D14's correction. The verification API is
   Etherscan-compatible, at `https://testnet.mstscan.com/api`. Checked by
   reading the explorer's own version/about page and its API docs.
 - **`eth_getLogs`** works over the full chain range (no block-range cap was
